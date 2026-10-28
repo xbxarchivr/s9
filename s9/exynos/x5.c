@@ -243,7 +243,6 @@ static int last_slot;
 static uint32_t resid;
 static uint32_t last_is;
 static uint8_t sense[3];
-static uint8_t tag;
 
 static uint32_t uic_res, uic_get;	/* last UIC result code and arg3 value */
 static uint32_t mclk_rate;		/* discovered UniPro MCLK */
@@ -450,7 +449,7 @@ static uint32_t scsi_lun(uint8_t lun, unsigned timeout_ms, const uint8_t *cdb, u
 	ucd[0] = 0x01;			/* COMMAND UPIU */
 	ucd[1] = len ? 0x40 : 0x00;	/* R: data in */
 	ucd[2] = lun;
-	ucd[3] = ++tag;
+	ucd[3] = last_slot;		/* task tag = slot, as ufshcd (X5.3) */
 	ucd[12] = len >> 24;
 	ucd[13] = len >> 16;
 	ucd[14] = len >> 8;
@@ -531,6 +530,7 @@ static uint32_t devman(unsigned timeout_ms, uint8_t resp_type, uint32_t *ocs, ui
 	u->ucdbau = (uint32_t)((uintptr_t)ucd >> 32);
 	u->resp = RESP_FIELD << 16 | RESP_FIELD;
 	u->prdt = 0;
+	ucd[3] = last_slot;		/* task tag = slot, as ufshcd (X5.3) */
 	dsb();
 
 	hci_wr(REG_IS, hci(REG_IS));
@@ -564,8 +564,7 @@ static uint32_t devman(unsigned timeout_ms, uint8_t resp_type, uint32_t *ocs, ui
 static uint32_t nop_out(uint32_t *ocs, uint32_t *st)
 {
 	zero(ucd, DATA_OFF);
-	ucd[0] = 0x00;		/* NOP OUT */
-	ucd[3] = ++tag;
+	ucd[0] = 0x00;		/* NOP OUT; tag set by devman */
 	return devman(30, 0x20, ocs, st);
 }
 
@@ -581,8 +580,7 @@ static uint32_t query_flag(uint8_t opcode, unsigned timeout_ms, uint32_t *ocs, u
 	int write = opcode == 0x06;
 
 	zero(ucd, DATA_OFF);
-	ucd[0] = 0x16;			/* QUERY REQ */
-	ucd[3] = ++tag;
+	ucd[0] = 0x16;			/* QUERY REQ; tag set by devman */
 	ucd[5] = write ? 0x81 : 0x01;	/* query func: write / read (byte 6 = response) */
 	ucd[12] = opcode;
 	ucd[13] = 0x01;			/* fDeviceInit */
@@ -951,7 +949,6 @@ static int probe(void)
 
 	data = ucd + DATA_OFF;
 	slot = 0;
-	tag = 0;
 	dword_gran = -1;
 
 	uint32_t cap = hci(REG_CAP), hcs = hci(REG_HCS);
@@ -1095,7 +1092,7 @@ void shim_main(uint64_t dtb)
 	if (!xp.fb_ok)
 		xp_reset();
 	con_clear(GREY);
-	con_title("EXYNOS X5.2 RUNS");
+	con_title("EXYNOS X5.3 RUNS");
 	con_str("MODEL", xp.model[0] ? xp.model : "(no DTB)");
 	p = put_hex(put(b, "IMG "), xp.image, 9);
 	put_dec(put(p, " size "), (uint32_t)(xp.image_end - xp.image));
@@ -1113,7 +1110,7 @@ void shim_main(uint64_t dtb)
 
 	int y = con_row();
 	con_set_row(24);
-	con_title(ok ? "EXYNOS X5.2: OK  " : "EXYNOS X5.2: STOP");
+	con_title(ok ? "EXYNOS X5.3: OK  " : "EXYNOS X5.3: STOP");
 	con_set_row(y);
 	con_skip();
 	int tick_y = con_row();
