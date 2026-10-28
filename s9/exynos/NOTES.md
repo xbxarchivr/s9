@@ -159,7 +159,7 @@ readback.
   /cpus reg values in the bits used (Aff1 * 4 + Aff0)**, so several cores
   share slots 0 and 4 and CPU0 looks in the wrong ones. Slot 4 shows '-'
   because CPU0 clears a slot just before each CPU_ON.
-- **X1.4** (QEMU ok, boot.img sha256 4633f73f..., not flashed yet): CPU0 hands
+- **X1.4** (QEMU ok, boot.img sha256 4633f73f..., flashed 2026-10-28 with verified readback, result pending): CPU0 hands
   each core its slot (= /cpus index) through `x_next_slot`, which `xentry.S`
   reads; no MPIDR arithmetic left. Rows show the core's real MPIDR_EL1 (in
   place of SCTLR).
