@@ -283,4 +283,4 @@ set before each doorbell. Then MBR, GPT header, partitions >= 64 MiB plus
 BOOT/RECOVERY, USERDATA/CACHE superblock type, and an end-to-end check: the
 first block of BOOT must be our own boot.img (ANDROID!, kernel_size = shim).
 QEMU: only the "no controller" path (stops at "requests still pending").
-boot.img sha256 b07eda09..., not flashed yet.
+boot.img sha256 b07eda09..., flashed 2026-10-28 with verified readback, result pending.
