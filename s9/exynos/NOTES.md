@@ -386,7 +386,21 @@ the UFS Device W-LUN with **power condition 3 (power down)**: S-Boot powers
 the device down right before jumping to the kernel (hence our 2/04/02). The
 UCD is reused for every command, so no data-command descriptor is left.
 Our probe: same as X3.5 (READ 1 GOOD, buffer untouched, IS 0x00020001 SBFES).
-- **X3.7** (boot.img sha256 145adcff..., flashed 2026-10-28 with verified readback, result pending): additionally dumps
+- **X3.7** (boot.img sha256 145adcff..., flashed 2026-10-28 with verified readback): additionally dumps
   S-Boot's UCD from +0x800 (+0x800..0x83F, +0x880, +0x890, +0x900, +0x980),
   where the PRDT of its last data read (loading us) probably still lies;
   4 KB entries with addresses 0x1000 apart would show the stride and layout.
+
+**X3.7 result on the G960F (photo):** S-Boot's UCD at +0x800..0x83F, +0x880,
++0x890, +0x900, +0x980 is all zero: S-Boot clears the whole UCD per command
+(or keeps the PRDT elsewhere), so no trace of its data-read layout survives.
+Rest as X3.5 (READ 1 GOOD, buffer untouched, IS 0x00020001).
+
+**UFS status (end of 2026-10-28):** host up after S-Boot (HCS 0x10F, HCE reads
+0), our request list accepted, offsets in bytes, device powered down by
+S-Boot and woken with START STOP UNIT (ACTIVE) to W-LUN 0xD0, no-data
+commands work, **every data-in transfer ends in IS.SBFES with nothing in our
+buffer**, after which the host must be reset. Next: read Samsung's vendor
+UFS driver for this SoC (LineageOS android_kernel_samsung_universal9810:
+drivers/scsi/ufs/ufs-exynos.c, FMP/SMU code) for the exact PRDT entry layout
+and what is set up before the first data transfer, instead of more guesses.
