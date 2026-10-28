@@ -193,9 +193,27 @@ readback.
   cpu@100; the 2024 upstream series says the vendor firmware does not set
   CNTFRQ_EL0 (hardcoded in the timer node).
 - **X1.5** (QEMU ok at EL1 and with secondaries entering at EL2, boot.img
-  sha256 ba6c15af..., flashed 2026-10-28 with verified readback, result pending): `xentry.S` now does what Linux's
+  sha256 ba6c15af..., flashed 2026-10-28 with verified readback): `xentry.S` now does what Linux's
   entry does before anything else: masks interrupts, drops EL2 -> EL1 if
   entered at EL2, writes SCTLR_EL1 = 0x30D00800 (MMU/caches off, LE), sets
   VBAR_EL1; then paints a **blue** bar (top 10 rows of the core's square)
   before any C. Per M3 slot: nothing = never entered, blue only = entered but
   died before the report, green = reported.
+- **X1.5 result on the G960F (photo):** same as X1.4. Three green squares
+  (A55 slots 1-3), **slots 4-7 completely empty: no blue bar**, rows "never
+  arrived (5+2 s)", SLOTS `-UUU----`. The M3 cores never execute even the
+  first instructions of `xentry.S`, so their reset state is not the problem.
+  CPU_ON returns 0 for them but they never reach our entry point.
+  Guess (not verified): the big cluster (CPUCL1) power domain and/or clock is
+  off after S-Boot, and Samsung's kernel turns it on (exynos-cpupm / CAL PMU
+  sequences / ACPM) before its CPU_ON. Mainline (6.14+) and ztOS claim 8 cores,
+  so whatever they do is public and worth reading.
+
+## Status of X1 (milestone 1 done, 2026-10-28)
+
+**XNU can run on the Exynos S9 on the A55 cluster**: all four A55s (MPIDR
+0x81000000-0x81000300) support the 16K granule and come up through PSCI 0.1.
+The shim boots from S-Boot at EL1 and draws on the panel (fb 0xCC000000,
+DECON-F HW trigger 0x1281). Interrupt controller is GICv2 (GIC-400) at
+0x10100000. Open: whether the Mongoose M3 cores have 16K (they would only add
+speed; XNU can simply leave them off) and how to power the big cluster.
