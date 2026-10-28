@@ -96,7 +96,8 @@ replaces and the Exynos fact or LineageOS reference it rests on.
 - [x] `PAYLOAD=out/exynos/payload.bin exynos/build.sh x4`, flash, photo:
       **booted to "waiting for root" (IOMedia Apple_HFS) on 2026-10-28**
 - [x] cpus=4 (X4.1): 4/4 A55 cores, PSCI psci-id and GICv2 cross-CPU SGIs OK
-- [ ] root filesystem (UFS data path, or a RAM disk root) -> launchd
+- [x] RAM-disk root: sweet-init runs as PID 1 (X4.2, 2026-10-28)
+- [ ] real iOS root: UFS data path, more RAM, Exynos UFS driver in XNU
 - Expected first stop: the loader's INITRD line, then either XNU's
   framebuffer log or a panic screen. The INITRD range must stay outside
   0x92000000-0xAF800000 (the loader refuses otherwise).

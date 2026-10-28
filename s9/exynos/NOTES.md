@@ -528,8 +528,22 @@ Mach-O (`out/exynos/init/sweet-init`); mockfs serves the RAM disk itself as
 at 0x944d0000 (0x8000), cmdline `debug=0xc serial=3 cpus=4 keepsyms=1 -v
 rd=md0 sweettouch=0 sweetkeys=0 sweetusb=0 sweetbattery=0 sweetcpu=0`.
 X4.2 boot.img sha256 6b001223... (copy `out/exynos/boot-x4.2.img`), flashed
-2026-10-28 with verified readback, result pending. Expected: "BSD root: md0", "load_init_program: attempting to
+2026-10-28 with verified readback. Expected: "BSD root: md0", "load_init_program: attempting to
 load /sbin/launchd", "*** SWEET userspace: init running as PID 1 ***", then
 "SWEET init: still alive" every 5 s.
 Step 2 (a real iOS root) needs storage: the iOS 16 root is GBs, the RAM
 window 472 MB.
+
+**X4.2 result on the G960F (photo): USERSPACE PID 1 RUNS.** "Added memory
+device md0/rmd0 ... at FFFFFE0008400000", "BSD root: md0, major 1, minor 0",
+"load_init_program: attempting to load /usr/appleinternal/sbin/
+launchd.development" then "/sbin/launchd", **"*** SWEET userspace: init
+running as PID 1 ***"**, then "SWEET init: still alive" every 5 s (8 seen),
+no panic; "mcache: 4 CPU(s)". Exec of an ad-hoc signed static Mach-O,
+syscalls, devfs /dev/console and select timeouts work on the Exynos, on 4
+A55 cores. Same milestone as the sweet's 0025 boot.
+Next for a real iOS root: (1) UFS data path (full host re-init as
+ufs-exynos.c / ufs-cal-9810.c do it; X3.x showed every data-in DMA ends in
+IS.SBFES on S-Boot's host state), (2) more RAM than the 472 MB window
+(0091-style holes in pmap for the Exynos banks), (3) an Exynos UFS driver
+for XNU (bsd/dev/sweet_ufs.c is Qualcomm's ufshc).
