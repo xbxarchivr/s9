@@ -217,3 +217,26 @@ The shim boots from S-Boot at EL1 and draws on the panel (fb 0xCC000000,
 DECON-F HW trigger 0x1281). Interrupt controller is GICv2 (GIC-400) at
 0x10100000. Open: whether the Mongoose M3 cores have 16K (they would only add
 speed; XNU can simply leave them off) and how to power the big cluster.
+
+## Stage X2: interrupts on the A55 cluster (built, NOT run on a phone yet)
+
+`./exynos/build.sh x2` (`exynos/x2.c` + new shared `exynos/xplat.c`: DT with
+proper per-node #address-cells, PSCI 0.1 IDs, display init, CPU_ON through
+`x_next_slot`; X1 keeps its own copy as it ran). UFS was left for X3: the
+SDM845 `shim/ufs.c` assumes Qualcomm descriptor offsets in dwords, Exynos
+UFS wants them in bytes plus vendor setup.
+
+What it does, each step on CPU0 and then on every A55 (/cpus reg < 0x100;
+the M3s are not started): reads the GIC's reg from the DT (falls back to
+0x10101000 / 0x10102000), the virtual-timer PPI from /timer (3rd entry,
+INTID = 16 + PPI), enables Group 1 in GICD_CTLR (NS view) once; per core:
+banked GICD_ITARGETSR0 (own CPU interface bit), IGROUPR0, enables SGI 1/2/3 +
+vtimer PPI only (no SPI), GICC PMR 0xF0 / BPR 0 / CTLR |= 1; vtimer every 10 ms
+for 300 ms (expect ~30); 10 SGIs to itself (GICD_SGIR filter "self"). Then CPU0
+sends 5 SGIs to each waiting core by its interface bit, and a final uncounted
+SGI 3 to end their WFI. Rows: `if` interface bit, `tmr`, `sgi`, `x` (cross),
+`oth` other IRQs (/last INTID), `grp` IGROUPR0. Green square = core finished.
+Runs 60 s, then PSCI reset.
+
+QEMU (virt, GICv2, 8x A55): all 8 cores tmr 28-29, sgi 10, x 5, verdict OK,
+all squares green. boot.img sha256 5b9c9422..., not flashed yet.

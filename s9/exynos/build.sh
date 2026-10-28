@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build an Exynos (SM-G960F/G965F) shim stage and put it into a copy of the
 # phone's own stock boot.img (tools: backup-boot.sh fetches it from TWRP).
-#   ./build.sh [x1]                     stage to build (default x1)
+#   ./build.sh [x1|x2]                  stage to build (default x1)
 #   STOCK_BOOT=path ./build.sh          base boot.img (default backup/exynos-boot-stock.img)
 #   out/exynos/boot.img      -> exynos/flash-twrp.sh (verified dd)
 #   out/exynos/boot.tar.md5  -> Odin, AP slot
@@ -19,7 +19,8 @@ CFLAGS="-O2 -ffreestanding -nostdlib -fno-pic -mgeneral-regs-only -mstrict-align
 STAGE=${1:-x1}
 case $STAGE in
 x1) main="exynos/x1.c exynos/xentry.S" ;;
-*) echo "usage: exynos/build.sh [x1]" >&2; exit 2 ;;
+x2) main="exynos/x2.c exynos/xplat.c exynos/xentry.S" ;;
+*) echo "usage: exynos/build.sh [x1|x2]" >&2; exit 2 ;;
 esac
 
 out=out/exynos
