@@ -326,7 +326,7 @@ re-initializes the device). Second TUR: timeout, but its UTRD OCS had been
 rewritten 0x0F -> 0x07, so the host did process it (another refusal) and then
 kept the slot busy; IS 0x00000001 (UTRCS). So X3.1's READ CAPACITY hang was
 very likely the same refusal, not the PRDT length.
-- **X3.3** (boot.img sha256 0e98a70e..., not flashed yet): TUR, then START
+- **X3.3** (boot.img sha256 0e98a70e..., flashed 2026-10-28 with verified readback, result pending): TUR, then START
   STOP UNIT power condition ACTIVE (CDB 1B 00 00 00 10 00) to the UFS Device
   W-LUN 0xD0 (5 s timeout, as ufshcd_set_dev_pwr_mode), TUR, START STOP UNIT
   START=1 to LUN 0, TUR, TUR; stops at the first GOOD. IS cleared (W1C) before
