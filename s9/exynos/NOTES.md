@@ -372,8 +372,21 @@ Not the address range as such (S-Boot DMAs our own kernel into the same
 0x80xxxxxx RAM). Guess: the host reads our PRDT entry in another layout
 (Linux's exynos FMP code mentions a secure FMP setting selecting the entry
 format) and DMAs to a bogus address.
-- **X3.6** (boot.img sha256 2afe2892..., flashed 2026-10-28 with verified readback, result pending): before touching the
+- **X3.6** (boot.img sha256 2afe2892..., flashed 2026-10-28 with verified readback): before touching the
   host, reads S-Boot's own request list (UTRLBA, 0xEF002000) from RAM: per used
   slot DW0, OCS, UCD address, the raw response and PRDT fields, the command's
   opcode and expected length, and 64 bytes from its PRDT offset. That is the
   layout Samsung's own code used to load us. Then the X3.5 probe as before.
+
+**X3.6 result on the G960F (photo):** S-Boot's list (0xEF002000) has one used
+slot: **slot 0, DW0 0x01000000 (CT 0, no data, I), OCS 0, UCD 0xEF000000,
+response field 0x04000400 (offset 1024, length 1024 bytes), PRDT field 0**.
+Its command UPIU: 01 00 D0 00 ... CDB **1B 00 00 00 30**: START STOP UNIT to
+the UFS Device W-LUN with **power condition 3 (power down)**: S-Boot powers
+the device down right before jumping to the kernel (hence our 2/04/02). The
+UCD is reused for every command, so no data-command descriptor is left.
+Our probe: same as X3.5 (READ 1 GOOD, buffer untouched, IS 0x00020001 SBFES).
+- **X3.7** (boot.img sha256 145adcff..., not flashed yet): additionally dumps
+  S-Boot's UCD from +0x800 (+0x800..0x83F, +0x880, +0x890, +0x900, +0x980),
+  where the PRDT of its last data read (loading us) probably still lies;
+  4 KB entries with addresses 0x1000 apart would show the stride and layout.

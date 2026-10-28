@@ -1,5 +1,5 @@
 /*
- * Galaxy S9 Exynos milestone X3 (rev 1.6): read-only probe of the internal UFS that
+ * Galaxy S9 Exynos milestone X3 (rev 1.7): read-only probe of the internal UFS that
  * S-Boot loaded us from. CPU0 only. Adapted from shim/ufs.c (SDM845 M3).
  *
  * Stock DT (rev26, from the boot.img dt section): ufs@0x11120000
@@ -332,13 +332,21 @@ static void dump_sboot(void)
 		p = put_hex(put(p, " op "), rd8(ucdp + 16), 2);
 		put_hex(put(p, " len "), __builtin_bswap32(rd32(ucdp + 12)), 8);
 		con_str("", b);
-		uintptr_t e = ucdp + (pf & 0xffff);
-		if (!in_ram(e))
-			continue;
-		for (int r = 0; r < 4; r++) {	/* 64 bytes from the PRDT offset */
-			p = put_hex(put(b, "+"), r * 16, 2);
+		/*
+		 * X3.6: S-Boot's last command is a no-data START STOP UNIT (W-LUN
+		 * 0xD0, power condition 3 = power down), response at 1024 (1024
+		 * bytes), so its UCD starts with that command. The PRDT of its
+		 * last data read probably still sits after the response: dump
+		 * from 2048, rows placed to show a 16- or a 128-byte stride.
+		 */
+		static const uint16_t rows[8] = { 0x800, 0x810, 0x820, 0x830, 0x880, 0x890, 0x900, 0x980 };
+		for (int r = 0; r < 8; r++) {
+			uintptr_t e = ucdp + rows[r];
+			if (!in_ram(e))
+				break;
+			p = put_hex(put(b, "+"), rows[r], 3);
 			for (int k = 0; k < 4; k++)
-				p = put_hex(put(p, " "), rd32(e + r * 16 + k * 4), 8);
+				p = put_hex(put(p, " "), rd32(e + k * 4), 8);
 			con_str("", b);
 		}
 	}
@@ -559,7 +567,7 @@ void shim_main(uint64_t dtb)
 	if (!xp.fb_ok)
 		xp_reset();
 	con_clear(GREY);
-	con_title("EXYNOS X3.6 RUNS");
+	con_title("EXYNOS X3.7 RUNS");
 	con_str("MODEL", xp.model[0] ? xp.model : "(no DTB)");
 	p = put_hex(put(b, "IMG "), xp.image, 9);
 	put_dec(put(p, " size "), (uint32_t)(xp.image_end - xp.image));
@@ -570,7 +578,7 @@ void shim_main(uint64_t dtb)
 
 	int y = con_row();
 	con_set_row(24);
-	con_title(ok ? "EXYNOS X3.6: OK  " : "EXYNOS X3.6: STOP");
+	con_title(ok ? "EXYNOS X3.7: OK  " : "EXYNOS X3.7: STOP");
 	con_set_row(y);
 	con_skip();
 	int tick_y = con_row();
