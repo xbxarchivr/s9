@@ -239,4 +239,4 @@ SGI 3 to end their WFI. Rows: `if` interface bit, `tmr`, `sgi`, `x` (cross),
 Runs 60 s, then PSCI reset.
 
 QEMU (virt, GICv2, 8x A55): all 8 cores tmr 28-29, sgi 10, x 5, verdict OK,
-all squares green. boot.img sha256 5b9c9422..., not flashed yet.
+all squares green. boot.img sha256 5b9c9422..., flashed 2026-10-28 with verified readback, result pending.
