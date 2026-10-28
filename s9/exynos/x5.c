@@ -556,7 +556,9 @@ static uint32_t nop_out(uint32_t *ocs, uint32_t *st)
 
 /*
  * fDeviceInit flag query. opcode 0x06 = SET_FLAG (write func, value 1),
- * 0x05 = READ_FLAG (read func). Response code at resp+6, flag value is bit 0
+ * 0x05 = READ_FLAG (read func). Query function goes in header byte 5 (Linux
+ * UPIU_HEADER_DWORD(0, query_func, 0, 0)); with it in byte 6 the device
+ * answered 0xFE (invalid opcode). Response code at resp+6, flag value is bit 0
  * of the BE32 value at resp+20..23.
  */
 static uint32_t query_flag(uint8_t opcode, unsigned timeout_ms, uint32_t *ocs, uint32_t *st, uint32_t *flag)
@@ -566,7 +568,7 @@ static uint32_t query_flag(uint8_t opcode, unsigned timeout_ms, uint32_t *ocs, u
 	zero(ucd, DATA_OFF);
 	ucd[0] = 0x16;			/* QUERY REQ */
 	ucd[3] = ++tag;
-	ucd[6] = write ? 0x81 : 0x01;	/* query func: write / read */
+	ucd[5] = write ? 0x81 : 0x01;	/* query func: write / read (byte 6 = response) */
 	ucd[12] = opcode;
 	ucd[13] = 0x01;			/* fDeviceInit */
 	ucd[14] = 0;			/* index */
