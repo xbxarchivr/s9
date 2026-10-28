@@ -146,7 +146,20 @@ readback.
   than 1 s, and CPU_OFF from an arrived core may cancel the pending start of
   its cluster-mates (only the first core of each cluster painted).
   CPU0 MIDR reads 410FD051? (photo), MMFR0 0x00101122 (16K yes).
-- **X1.3** (QEMU ok, boot.img sha256 b2b8c596..., flashed 2026-10-28 with verified readback, result pending): up to 5 s
+- **X1.3** (QEMU ok, boot.img sha256 b2b8c596..., flashed 2026-10-28 with verified readback): up to 5 s
   per core, arrival time in ms on each row (L = only found in the final look),
   cores park in WFE (no CPU_OFF), every slot read again 2 s after the last
   start, SLOTS row with the raw slot contents (U up, F fault, - empty, ? other).
+- **X1.3 result on the G960F (photo):** ran to the end. Still two green
+  squares; measured on the photo they sit at **slots 0 and 4** (my X1.2 reading
+  "1 and 4" was probably off by one). Every row "never arrived (5+2 s)", but
+  **SLOTS = `U-------`: a report sits in slot 0**, CPU0's own slot, which no
+  core should compute from its /cpus reg. Conclusion (inference, fits X1,
+  X1.1, X1.2 and X1.3): **the cores' real MPIDR_EL1 values do not follow the
+  /cpus reg values in the bits used (Aff1 * 4 + Aff0)**, so several cores
+  share slots 0 and 4 and CPU0 looks in the wrong ones. Slot 4 shows '-'
+  because CPU0 clears a slot just before each CPU_ON.
+- **X1.4** (QEMU ok, boot.img sha256 4633f73f..., not flashed yet): CPU0 hands
+  each core its slot (= /cpus index) through `x_next_slot`, which `xentry.S`
+  reads; no MPIDR arithmetic left. Rows show the core's real MPIDR_EL1 (in
+  place of SCTLR).

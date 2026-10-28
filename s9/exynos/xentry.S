@@ -1,16 +1,16 @@
 /*
  * Exynos secondary-core entry. PSCI 0.1 CPU_ON (what the G960F firmware
  * speaks: PSCI_VERSION is NOT_SUPPORTED) takes no context id, so x0 is
- * whatever the firmware left. Derive the stack slot from MPIDR instead:
- * Exynos 9810 cores are 0x000-0x003 (A55) and 0x100-0x103 (M3), so
- * slot = Aff1 * 4 + Aff0, kept within the 8 stacks shim.ld reserves.
+ * whatever the firmware left. MPIDR is no help either: on the G960F the
+ * cores' real MPIDR does not match the /cpus reg values (X1.3: two cores
+ * landed in slot 0, CPU0's own). CPU0 starts one core at a time and stores
+ * its slot (1..7) in x_next_slot just before CPU_ON; the core reads it here.
+ * With the MMU off on both sides that word is read straight from memory.
  */
 	.text
 	.globl x_secondary_entry
 x_secondary_entry:
-	mrs	x0, mpidr_el1
-	ubfx	x1, x0, #8, #4		/* Aff1 */
-	and	x0, x0, #0xf		/* Aff0 */
-	add	x0, x0, x1, lsl #2
+	adrp	x0, x_next_slot
+	ldr	w0, [x0, :lo12:x_next_slot]
 	and	x0, x0, #7
 	b	secondary_entry

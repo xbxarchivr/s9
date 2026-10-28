@@ -1,6 +1,6 @@
 /*
  * Galaxy S9 Exynos (SM-G960F/G965F, Exynos 9810, starlte/star2lte)
- * milestone X1 (rev 1.3): prove the shim runs under Samsung's S-Boot and answer the
+ * milestone X1 (rev 1.4): prove the shim runs under Samsung's S-Boot and answer the
  * questions that decide whether this SoC can run XNU at all.
  *
  *   1. Does every core, Mongoose M3 included, support the 16K granule
@@ -413,10 +413,13 @@ struct report {
 
 static volatile struct report rep[NR_CPUS];
 
-static int mpidr_slot(uint64_t mpidr)
-{
-	return ((((mpidr >> 8) & 0xf) << 2) + (mpidr & 0xf)) & 7;
-}
+/*
+ * X1.3: SLOTS showed a report in slot 0 (CPU0's own) and the squares sat at
+ * slots 0 and 4, so the real MPIDRs do not give Aff1 * 4 + Aff0 = the /cpus
+ * index. CPU0 now hands out the slot (= /cpus index) through this word,
+ * read by xentry.S, and each row shows the core's real MPIDR.
+ */
+volatile uint32_t x_next_slot;
 
 static void flush(const volatile void *p, uint64_t n)
 {
@@ -474,10 +477,11 @@ void secondary_main(uint64_t slot)
 
 static void cpu_row(int i);
 
-/* 1 if the core's slot holds a report (copied into c) */
-static int take_report(struct cpu *c)
+/* 1 if core i's slot holds a report (copied into its entry) */
+static int take_report(int i)
 {
-	volatile struct report *r = &rep[mpidr_slot(c->reg)];
+	struct cpu *c = &x.cpu[i];
+	volatile struct report *r = &rep[i];
 
 	flush(r, sizeof(*r));
 	if (r->magic != REP_UP && r->magic != REP_FAULT)
@@ -505,7 +509,7 @@ static void probe_cpus(int row)
 
 	for (int i = 0; i < x.ncpu; i++) {
 		struct cpu *c = &x.cpu[i];
-		volatile struct report *r = &rep[mpidr_slot(c->reg)];
+		volatile struct report *r = &rep[i];
 		con_set_row(row + i * CPU_ROW_H);
 		if ((c->reg & 0xffffff) == self) {
 			cpu_read(c);
@@ -520,12 +524,14 @@ static void probe_cpus(int row)
 			cpu_row(i);
 		r->magic = 0;
 		flush(r, sizeof(*r));
+		x_next_slot = i;
+		flush(&x_next_slot, sizeof(x_next_slot));
 		c->state = CPU_WAIT;
 		c->t_call = now();
 		c->ret = (int64_t)psci_call(on, c->reg, (uintptr_t)x_secondary_entry, 0);
 		if (c->ret != 0)
 			c->state = CPU_ABSENT;
-		for (int t = 0; t < WAIT_MS && c->state == CPU_WAIT && !take_report(c); t++)
+		for (int t = 0; t < WAIT_MS && c->state == CPU_WAIT && !take_report(i); t++)
 			delay_ms(1);
 		con_set_row(row + i * CPU_ROW_H);
 		if (x.fb_src >= 0)
@@ -534,7 +540,7 @@ static void probe_cpus(int row)
 	/* Late arrivals: one more look at every slot. */
 	delay_ms(2000);
 	for (int i = 0; i < x.ncpu; i++)
-		if (x.cpu[i].state == CPU_WAIT && take_report(&x.cpu[i]))
+		if (x.cpu[i].state == CPU_WAIT && take_report(i))
 			x.cpu[i].late = 1;
 	/* No /cpus in the DT: at least report the boot core. */
 	if (!found_self && x.ncpu < NR_CPUS) {
@@ -571,7 +577,7 @@ static void cpu_row(int i)
 		p = put(put(p, " 16K "), (c->mmfr0 >> 20) & 0xf ? "YES" : "NO ");
 		p = put_hex(put(p, " "), c->mmfr0, 8);
 		p = put_dec(put(p, " EL"), c->el);
-		p = put_hex(put(p, " "), c->sctlr, 8);
+		p = put_hex(put(p, " "), c->mpidr, 8);
 		if (c->state == CPU_SELF)
 			p = put(p, " boot");
 		else
@@ -635,7 +641,7 @@ static void draw(int final, int cpu_y)
 		return;
 	}
 	con_clear(GREY);
-	con_title("EXYNOS X1.3 RUNS");
+	con_title("EXYNOS X1.4 RUNS");
 	bands();
 
 	con_str("MODEL", x.model[0] ? x.model : "(no DTB)");
@@ -703,7 +709,7 @@ static void draw(int final, int cpu_y)
 static void draw_final(int cpu_y)
 {
 	con_set_row(24);	/* con.c TOP */
-	con_title("EXYNOS X1.3: OK ");
+	con_title("EXYNOS X1.4: OK ");
 	con_set_row(cpu_y);
 	for (int i = 0; i < x.ncpu; i++)
 		cpu_row(i);
