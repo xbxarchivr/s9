@@ -218,7 +218,7 @@ DECON-F HW trigger 0x1281). Interrupt controller is GICv2 (GIC-400) at
 0x10100000. Open: whether the Mongoose M3 cores have 16K (they would only add
 speed; XNU can simply leave them off) and how to power the big cluster.
 
-## Stage X2: interrupts on the A55 cluster (built, NOT run on a phone yet)
+## Stage X2: interrupts on the A55 cluster (PASSED on the G960F, 2026-10-28)
 
 `./exynos/build.sh x2` (`exynos/x2.c` + new shared `exynos/xplat.c`: DT with
 proper per-node #address-cells, PSCI 0.1 IDs, display init, CPU_ON through
@@ -239,4 +239,21 @@ SGI 3 to end their WFI. Rows: `if` interface bit, `tmr`, `sgi`, `x` (cross),
 Runs 60 s, then PSCI reset.
 
 QEMU (virt, GICv2, 8x A55): all 8 cores tmr 28-29, sgi 10, x 5, verdict OK,
-all squares green. boot.img sha256 5b9c9422..., flashed 2026-10-28 with verified readback, result pending.
+all squares green. boot.img sha256 5b9c9422..., flashed 2026-10-28 with verified readback.
+
+**X2 result on the G960F (photo): "EXYNOS X2: OK", 4 cores, 3 green squares.**
+- GIC from the DT reg: **GICD 0x10101000, GICC 0x10102000**, compatible
+  arm,cortex-a15-gic. GICD_CTLR 0x00 -> 0x01 (S-Boot left forwarding off).
+  **GICD_TYPER 0x0000FCEF**: ITLinesNumber 15 -> 512 interrupt IDs,
+  CPUNumber 7 -> 8 CPU interfaces, SecurityExtn 1, LSPI 31.
+  **GICD_IIDR 0x0200143B, GICC_IIDR 0x0202143B = GIC-400.**
+- /timer PPIs 13 14 11 10 -> **virtual timer INTID 27**; 29 ticks in 300 ms at
+  10 ms on every core (26 MHz counter).
+- CPU interface bits: CPU0 0x01, CPU1 0x02, CPU2 0x04, CPU3 0x08.
+  IGROUPR0 reads 0 from non-secure (RAZ), yet SGIs and the PPI are delivered:
+  firmware has them as Group 1.
+- Every A55: sgi 10/10 to itself, cross 5/5 from CPU0, no other IRQs.
+- **Conclusion: a GICv2 backend for XNU on the A55s has everything it needs**
+  (distributor, banked CPU interface, PPI timer, IPIs by interface bit).
+- Next: X3 = read-only UFS probe (Exynos UFS: byte-granular PRDT/offsets,
+  vendor regs; controller as S-Boot left it).
