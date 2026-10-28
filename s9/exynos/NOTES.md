@@ -98,8 +98,8 @@ readback.
   with TWRP dd, readback matched, phone rebooted into it.
 - **X1 result on the G960F (photo, 2026-10-28):** the shim runs and draws.
   Observed: title "EXYNOS X1 RUNS" (the pre-CPU screen; the final "X1: OK"
-  screen never appeared, so the CPU probe hung or the photo came first; not
-  yet known if it reset at 90 s). Model "Samsung Star rev26 board based on
+  screen never appeared, and the phone did NOT reset itself at 90 s: the CPU
+  probe hung for good. The user could not get it to reboot either). Model "Samsung Star rev26 board based on
   EXYNOS9810", compatible "Samsung, Star rev26", S-Boot G960FXXUHFVG4,
   hardware samsungexynos9810, lcdtype 9503811. EL1, CNTFRQ 26000000. Shim at
   0x80128000, DTB at 0x8A000000 (296K). **PSCI_VERSION = 0xFFFFFFFF
@@ -113,7 +113,7 @@ readback.
   like a framebuffer (default used). Reserved nodes are named `name@0xADDR`
   and the base/size column did not match the unit addresses: X1 read them with
   the root's cells; X1.1 uses reserved-memory's own cells.
-- **X1.1** (built, QEMU ok, not flashed yet): PSCI
+- **X1.1** (QEMU ok; boot.img sha256 f34ced00...8f83 flashed 2026-10-28 with verified readback, result pending): PSCI
   0.1 function IDs from the DT (`cpu_on`/`cpu_off`) when present; secondaries
   enter through `xentry.S`, which picks the stack from MPIDR because PSCI 0.1
   CPU_ON passes no context id (X1 used x0 for that: garbage on 0.1, a likely
