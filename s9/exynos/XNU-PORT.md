@@ -89,9 +89,9 @@ replaces and the Exynos fact or LineageOS reference it rests on.
 ## First XNU boot (X4) checklist
 
 - [x] patch 0102 written, applies on 0001-0101
-- [ ] CI build green (push to main runs `.github/workflows/xnu.yml`)
-- [ ] `exynos/mkadt.py out/exynos/exynos.adt`
-- [ ] `tools/mkpayload.py kernel out/exynos/exynos.adt out/exynos/payload.bin
+- [x] CI build green: xbxarchivr/s9 run 40700590330, kernel sha256 27df345e...
+- [x] `exynos/mkadt.py out/exynos/exynos.adt`
+- [x] `tools/mkpayload.py kernel out/exynos/exynos.adt out/exynos/payload.bin
       --cmdline "cpus=1 sweettouch=0 sweetkeys=0 sweetusb=0 sweetbattery=0 sweetcpu=0 -v"`
 - [ ] `PAYLOAD=out/exynos/payload.bin exynos/build.sh x4`, flash, photo
 - Expected first stop: the loader's INITRD line, then either XNU's

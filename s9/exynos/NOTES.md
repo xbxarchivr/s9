@@ -469,3 +469,17 @@ switch for the Qualcomm-only drivers, GICv2, PSCI psci-id), built by CI.
   ICC_SRE_EL2 when ID_AA64PFR0.GIC = 0; the early console takes its
   framebuffer from boot_args (it was hard-coded to 0x9d400000, which is RAM
   in the Exynos window). Built locally only as far as `git apply`.
+- **First Exynos kernel built (2026-10-28):** pushed main to the private repo
+  xbxarchivr/s9 (remote `xbx`); its xnu workflow ran on the push, run
+  40700590330, 4 min, applied 0001-0102 (the skipped patches are
+  darwin-xnu-build's own) and linked `kernel.development.sweet`, 17265608
+  bytes, sha256 27df345e729d62a0... No compile errors in 0102's files.
+  Downloaded to `out/exynos/xnu/`. Payload `out/exynos/payload.bin`
+  (16650944 bytes): phys 0x92000000, size 0x1d700000, kernel+ADT end
+  0x944d0000 (36.8 MB), entry 0xfffffe000748c488, cmdline `debug=0xc serial=3
+  cpus=1 keepsyms=1 -v sweettouch=0 sweetkeys=0 sweetusb=0 sweetbattery=0
+  sweetcpu=0`. ADT has no /product node (research/ipsw-x/d22ap.adt is not in
+  this checkout; only matters for userland). X4 boot.img sha256 95fb6751...
+  (42543104 bytes), not flashed yet. Expected: loader screen (INITRD must be
+  outside 0x92000000-0xaf800000), then the early console / XNU log on the
+  panel, most likely ending at "waiting for root device" (no UFS yet).
