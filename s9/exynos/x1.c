@@ -1,6 +1,6 @@
 /*
  * Galaxy S9 Exynos (SM-G960F/G965F, Exynos 9810, starlte/star2lte)
- * milestone X1 (rev 1.2): prove the shim runs under Samsung's S-Boot and answer the
+ * milestone X1 (rev 1.3): prove the shim runs under Samsung's S-Boot and answer the
  * questions that decide whether this SoC can run XNU at all.
  *
  *   1. Does every core, Mongoose M3 included, support the 16K granule
@@ -61,6 +61,8 @@ struct cpu {
 	char compat[28], enable[12];
 	volatile int state;
 	volatile uint64_t midr, mpidr, mmfr0, mmfr1, pfr0, el, sctlr, esr, elr;
+	uint64_t t_call, t_arrive;	/* CNTPCT at CPU_ON and at the report */
+	int late;			/* reported only after its wait ran out */
 	int64_t ret;			/* PSCI CPU_ON */
 };
 
@@ -393,13 +395,20 @@ static void pick_decon(void)
  * core reports into its own cache-line-aligned slot (chosen by MPIDR, as in
  * xentry.S, so it reads nothing CPU0 wrote), cleans it to memory, and paints
  * a square on the panel. CPU0 invalidates the slot before every read.
+ *
+ * X1.2: two squares (slots 1 and 4, the first core of each cluster after
+ * CPU0's), still no report within 1 s, and CPU0's SCTLR has the MMU off, so
+ * the cache guess was wrong. Now: up to WAIT_MS per core, arrival times on
+ * screen, the cores park instead of CPU_OFF (which might cancel a
+ * cluster-mate's pending start), and every slot is read again at the end.
  */
+#define WAIT_MS		5000
 #define REP_UP		0x58315550U	/* "X1UP" */
 #define REP_FAULT	0x58314641U	/* "X1FA" */
 #define SQ		40		/* proof-of-life square, px */
 
 struct report {
-	uint64_t magic, midr, mpidr, mmfr0, mmfr1, pfr0, el, sctlr, esr, elr;
+	uint64_t magic, midr, mpidr, mmfr0, mmfr1, pfr0, el, sctlr, esr, elr, t;
 } __attribute__((aligned(64)));
 
 static volatile struct report rep[NR_CPUS];
@@ -454,16 +463,38 @@ void secondary_main(uint64_t slot)
 	r->pfr0 = rsr("id_aa64pfr0_el1");
 	r->el = (rsr("CurrentEL") >> 2) & 3;
 	r->sctlr = rsr("sctlr_el1");
+	r->t = now();
 	dsb();
 	r->magic = REP_UP;
 	flush(r, sizeof(*r));
 	square(slot & 7, 0xff00ff00);	/* green */
-	psci_call(x.psci_cpu_off ? x.psci_cpu_off : PSCI_CPU_OFF, 0, 0, 0);
 	for (;;)
 		__asm__ volatile("wfe");
 }
 
 static void cpu_row(int i);
+
+/* 1 if the core's slot holds a report (copied into c) */
+static int take_report(struct cpu *c)
+{
+	volatile struct report *r = &rep[mpidr_slot(c->reg)];
+
+	flush(r, sizeof(*r));
+	if (r->magic != REP_UP && r->magic != REP_FAULT)
+		return 0;
+	c->midr = r->midr;
+	c->mpidr = r->mpidr;
+	c->mmfr0 = r->mmfr0;
+	c->mmfr1 = r->mmfr1;
+	c->pfr0 = r->pfr0;
+	c->el = r->el;
+	c->sctlr = r->sctlr;
+	c->esr = r->esr;
+	c->elr = r->elr;
+	c->t_arrive = r->t;
+	c->state = r->magic == REP_UP ? CPU_UP : CPU_FAULT;
+	return 1;
+}
 
 /* Each core's row goes on screen before its CPU_ON, so a hang names the call. */
 static void probe_cpus(int row)
@@ -490,30 +521,21 @@ static void probe_cpus(int row)
 		r->magic = 0;
 		flush(r, sizeof(*r));
 		c->state = CPU_WAIT;
+		c->t_call = now();
 		c->ret = (int64_t)psci_call(on, c->reg, (uintptr_t)x_secondary_entry, 0);
 		if (c->ret != 0)
 			c->state = CPU_ABSENT;
-		for (int t = 0; t < 1000 && c->state == CPU_WAIT; t++) {
-			flush(r, sizeof(*r));
-			if (r->magic == REP_UP || r->magic == REP_FAULT) {
-				c->midr = r->midr;
-				c->mpidr = r->mpidr;
-				c->mmfr0 = r->mmfr0;
-				c->mmfr1 = r->mmfr1;
-				c->pfr0 = r->pfr0;
-				c->el = r->el;
-				c->sctlr = r->sctlr;
-				c->esr = r->esr;
-				c->elr = r->elr;
-				c->state = r->magic == REP_UP ? CPU_UP : CPU_FAULT;
-				break;
-			}
+		for (int t = 0; t < WAIT_MS && c->state == CPU_WAIT && !take_report(c); t++)
 			delay_ms(1);
-		}
 		con_set_row(row + i * CPU_ROW_H);
 		if (x.fb_src >= 0)
 			cpu_row(i);
 	}
+	/* Late arrivals: one more look at every slot. */
+	delay_ms(2000);
+	for (int i = 0; i < x.ncpu; i++)
+		if (x.cpu[i].state == CPU_WAIT && take_report(&x.cpu[i]))
+			x.cpu[i].late = 1;
 	/* No /cpus in the DT: at least report the boot core. */
 	if (!found_self && x.ncpu < NR_CPUS) {
 		struct cpu *c = &x.cpu[x.ncpu++];
@@ -549,9 +571,12 @@ static void cpu_row(int i)
 		p = put(put(p, " 16K "), (c->mmfr0 >> 20) & 0xf ? "YES" : "NO ");
 		p = put_hex(put(p, " "), c->mmfr0, 8);
 		p = put_dec(put(p, " EL"), c->el);
-		p = put_hex(put(p, " SC "), c->sctlr, 8);
+		p = put_hex(put(p, " "), c->sctlr, 8);
 		if (c->state == CPU_SELF)
 			p = put(p, " boot");
+		else
+			p = put(put_dec(put(p, c->late ? " L" : " "),
+					(uint32_t)((c->t_arrive - c->t_call) / (x.cntfrq / 1000))), "ms");
 		break;
 	case CPU_CALL:
 		p = put(put(put(p, " "), c->enable[0] ? c->enable : "?"), " CPU_ON...");
@@ -561,7 +586,7 @@ static void cpu_row(int i)
 		p = put_hex(put(p, " ELR "), c->elr, 9);
 		break;
 	case CPU_WAIT:
-		p = put(p, " CPU_ON ok, never arrived");
+		p = put(p, " CPU_ON ok, never arrived (5+2 s)");
 		break;
 	default:
 		p = put_hex(put(p, " CPU_ON ret "), (uint64_t)c->ret, 8);
@@ -610,7 +635,7 @@ static void draw(int final, int cpu_y)
 		return;
 	}
 	con_clear(GREY);
-	con_title("EXYNOS X1.2 RUNS");
+	con_title("EXYNOS X1.3 RUNS");
 	bands();
 
 	con_str("MODEL", x.model[0] ? x.model : "(no DTB)");
@@ -678,7 +703,7 @@ static void draw(int final, int cpu_y)
 static void draw_final(int cpu_y)
 {
 	con_set_row(24);	/* con.c TOP */
-	con_title("EXYNOS X1.2: OK ");
+	con_title("EXYNOS X1.3: OK ");
 	con_set_row(cpu_y);
 	for (int i = 0; i < x.ncpu; i++)
 		cpu_row(i);
@@ -687,6 +712,18 @@ static void draw_final(int cpu_y)
 		con_str("VERDICT", v > 0 ? "16K on every core: XNU can run" :
 				   v == 0 ? "a core lacks 16K: XNU CANNOT run" :
 					    "not every core reported");
+	}
+	{
+		/* raw slot contents: U up, F fault, - empty, ? anything else */
+		char b[16];
+		for (int s = 0; s < NR_CPUS; s++) {
+			volatile struct report *r = &rep[s];
+			flush(r, sizeof(*r));
+			b[s] = r->magic == REP_UP ? 'U' : r->magic == REP_FAULT ? 'F' :
+			       r->magic ? '?' : '-';
+		}
+		b[NR_CPUS] = 0;
+		con_str("SLOTS", b);
 	}
 	con_skip();
 }

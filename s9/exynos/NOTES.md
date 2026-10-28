@@ -129,10 +129,24 @@ readback.
   Guess (not verified): CPU0 runs with its D-cache on and the new cores with
   theirs off, so they never saw the CPU table CPU0 wrote (X1.1 looked its own
   entry up there) and CPU0 never saw what they wrote.
-- **X1.2** (QEMU ok, boot.img sha256 9e4c89d7..., flashed 2026-10-28 with verified readback, result pending): each new
+- **X1.2** (QEMU ok, boot.img sha256 9e4c89d7..., flashed 2026-10-28 with verified readback): each new
   core writes into its own 64-byte-aligned report slot picked by MPIDR (same
   formula as xentry.S, so it reads nothing CPU0 wrote), cleans it with
   `dc civac`, and paints a 40 px square in the top-right corner (green = ran,
   red = took an exception), using constants only. CPU0 invalidates the slot
   before each read. Rows show SCTLR_EL1 of every core (bit 2 = D-cache on),
   to test the guess above. The final screen does not clear, so the squares stay.
+- **X1.2 result on the G960F (photo):** ran to the end. **Two green squares**,
+  positions match slots 1 and 4 = core 001 (A55) and core 100 (the first
+  Mongoose M3): new cores DO run our code (entry, stack, writes to the panel).
+  Still every row "CPU_ON ok, never arrived" (1 s wait). **CPU0 SCTLR_EL1 =
+  0x30C5183E: M=0 (MMU off), C=1, A=1 (alignment check on), I=1** -> CPU0 data
+  accesses are already non-cacheable, so the cache guess was wrong (unless
+  Samsung's EL2 sets HCR_EL2.DC, unknown). Guess now: cores arrive after more
+  than 1 s, and CPU_OFF from an arrived core may cancel the pending start of
+  its cluster-mates (only the first core of each cluster painted).
+  CPU0 MIDR reads 410FD051? (photo), MMFR0 0x00101122 (16K yes).
+- **X1.3** (QEMU ok, boot.img sha256 b2b8c596..., not flashed yet): up to 5 s
+  per core, arrival time in ms on each row (L = only found in the final look),
+  cores park in WFE (no CPU_OFF), every slot read again 2 s after the last
+  start, SLOTS row with the raw slot contents (U up, F fault, - empty, ? other).
