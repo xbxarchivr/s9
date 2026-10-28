@@ -1,6 +1,6 @@
 /*
  * Galaxy S9 Exynos (SM-G960F/G965F, Exynos 9810, starlte/star2lte)
- * milestone X1 (rev 1.4): prove the shim runs under Samsung's S-Boot and answer the
+ * milestone X1 (rev 1.5): prove the shim runs under Samsung's S-Boot and answer the
  * questions that decide whether this SoC can run XNU at all.
  *
  *   1. Does every core, Mongoose M3 included, support the 16K granule
@@ -641,7 +641,7 @@ static void draw(int final, int cpu_y)
 		return;
 	}
 	con_clear(GREY);
-	con_title("EXYNOS X1.4 RUNS");
+	con_title("EXYNOS X1.5 RUNS");
 	bands();
 
 	con_str("MODEL", x.model[0] ? x.model : "(no DTB)");
@@ -709,7 +709,7 @@ static void draw(int final, int cpu_y)
 static void draw_final(int cpu_y)
 {
 	con_set_row(24);	/* con.c TOP */
-	con_title("EXYNOS X1.4: OK ");
+	con_title("EXYNOS X1.5: OK ");
 	con_set_row(cpu_y);
 	for (int i = 0; i < x.ncpu; i++)
 		cpu_row(i);

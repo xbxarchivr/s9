@@ -179,3 +179,23 @@ readback.
   Next: read TWRP's dmesg (its kernel brings the M3s up): how it starts them,
   their MIDR, and whether arm64 cpufeature prints "SANITY CHECK: Unexpected
   variation in SYS_ID_AA64MMFR0_EL1" (TGran16 is a strict field).
+- **TWRP 3.7.0 kernel (2026-10-28, read-only):** Linux 4.9.118, 4K pages,
+  CONFIG_ARCH_EXYNOS9. cpu0-3 MIDR 0x410FD051 (A55 r0p1), **cpu4-7 MIDR
+  0x531F0020 (Samsung, variant 1, part 0x002 = Mongoose M3, r1p0)**. Linux
+  hotplugs CPU5-7 over and over (exynos_hpgov), 12 boots in dmesg, 31 in
+  last_kmsg: **Linux brings the M3s up with PSCI CPU_ON**. System-wide hwcaps
+  `fp asimd evtstrm aes pmull sha1 sha2 crc32` (no atomics/fphp: the M3 is
+  ARMv8.0, the A55 v8.2). tainted=0 and no "SANITY CHECK" line although the
+  string is in the kernel: Samsung silences the feature-mismatch check
+  (atomics alone would have tripped it), so its silence says nothing about
+  TGran16. M3 16K still unknown.
+- Public: mainline exynos9810.dtsi uses PSCI smc, cpu_on 0xc4000003, M3 at
+  cpu@100; the 2024 upstream series says the vendor firmware does not set
+  CNTFRQ_EL0 (hardcoded in the timer node).
+- **X1.5** (QEMU ok at EL1 and with secondaries entering at EL2, boot.img
+  sha256 ba6c15af..., not flashed yet): `xentry.S` now does what Linux's
+  entry does before anything else: masks interrupts, drops EL2 -> EL1 if
+  entered at EL2, writes SCTLR_EL1 = 0x30D00800 (MMU/caches off, LE), sets
+  VBAR_EL1; then paints a **blue** bar (top 10 rows of the core's square)
+  before any C. Per M3 slot: nothing = never entered, blue only = entered but
+  died before the report, green = reported.
