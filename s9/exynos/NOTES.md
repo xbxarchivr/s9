@@ -547,3 +547,25 @@ ufs-exynos.c / ufs-cal-9810.c do it; X3.x showed every data-in DMA ends in
 IS.SBFES on S-Boot's host state), (2) more RAM than the 472 MB window
 (0091-style holes in pmap for the Exynos banks), (3) an Exynos UFS driver
 for XNU (bsd/dev/sweet_ufs.c is Qualcomm's ufshc).
+
+## UFS, continued: host clocks and DMA config as Linux sets them (X3.9)
+
+Samsung's driver (ufs-exynos.c, universal9810 lineage-17.1) with clocks on:
+pre_setup_clocks(on) = FORCE_HCS(+0xB4) &= ~BIT4 (core clock auto-stop off),
+CLKSTOP_CTRL(+0xB0) &= ~0x17 (REFCLKOUT/REFCLK/UNIPRO_MCLK/PCLK not
+stopped), UFS_ACG_DISABLE(+0xFC) |= 1; link_startup_notify(PRE) adds
+FORCE_HCS |= CLK_STOP_CTRL_EN_ALL (0xDE0); init_host: DATA_REORDER(+0x60)=0xA,
+TXPRDT(+0x00)=PRDT_PREFECT_EN|12 = 0x8000000C, RXPRDT(+0x04)=0xC, NEXUS
+(+0x40/+0x44)=0xFFFFFFFF, AXIDMA_RWDATA_BURST_LEN(+0x6C)=WLU_EN|BURST_LEN(3)
+= 0x98000003, IOP_ACG_DISABLE(+0x100) &= ~1. setup_clocks(off) does the
+reverse (gate everything, HW ACG on): very likely what S-Boot leaves after
+powering the device down. Diagnostics in the vendor block: VENDOR_SPECIFIC_IS
++0x38, SMU_ABORT_MATCH_INFO +0x10C, FSM_MONITOR +0xC0, DMA0/1_MONITOR_STATE
++0xC8/+0xD0. HCI_SW_RST is +0x50 (for a full re-init later), and the DMA mask
+is 32 bits.
+- **X3.9** (boot.img sha256 ad84d706..., copy `out/exynos/boot-x3.9.img`, not
+  flashed yet): X3.8 + those writes on the running link before taking the
+  request list, dumped before ("VS BEFORE") and after ("VS AFTER"); after the
+  4 KB read: IS, vendor IS, SMU abort info, FSM and DMA monitors ("AFTER").
+  If data still fails: full re-init (HCI_SW_RST, ufs-cal-9810.c pre/post
+  link tables, DME_LINKSTARTUP, NOP OUT, fDeviceInit).

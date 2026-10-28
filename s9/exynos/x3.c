@@ -1,5 +1,5 @@
 /*
- * Galaxy S9 Exynos milestone X3 (rev 1.8): read-only probe of the internal UFS that
+ * Galaxy S9 Exynos milestone X3 (rev 1.9): read-only probe of the internal UFS that
  * S-Boot loaded us from. CPU0 only. Adapted from shim/ufs.c (SDM845 M3).
  *
  * Stock DT (rev26, from the boot.img dt section): ufs@0x11120000
@@ -44,6 +44,19 @@
 #define VS_TXPRDT	0x00
 #define VS_RXPRDT	0x04
 #define VS_NEXUS	0x40
+/* drivers/scsi/ufs/ufs-exynos.h of the universal9810 kernel */
+#define VS_TMNEXUS	0x44
+#define VS_IS		0x38
+#define VS_REORDER	0x60
+#define VS_BURST	0x6c
+#define VS_CLKSTOP	0xb0
+#define VS_FORCE_HCS	0xb4
+#define VS_FSM		0xc0
+#define VS_DMA0		0xc8
+#define VS_DMA1		0xd0
+#define VS_UFS_ACG	0xfc
+#define VS_IOP_ACG	0x100
+#define VS_SMU_ABORT	0x10c
 
 #define HCS_DP		(1u << 0)
 #define HCS_UTRLRDY	(1u << 1)
@@ -300,6 +313,26 @@ static void list_partitions(uint32_t entry_lba, uint32_t nent, uint32_t *boot_lb
 	}
 }
 
+/* the vendor HCI registers Linux's init touches, before/after ours */
+static void vs_dump(const char *label)
+{
+	static const uint16_t regs[10] = {
+		0x00, 0x04, 0x60, 0x6c, 0xb0, 0xb4, 0xfc, 0x100, 0x40, 0x44
+	};
+	char b[96], *p = b;
+
+	for (int i = 0; i < 10; i++) {
+		if (i == 5) {
+			con_str(label, b);
+			p = b;
+		}
+		p = put_hex(put(put_hex(p, regs[i], 3), "="), rd32(UFS_VS + regs[i]), 8);
+		*p++ = ' ';
+		*p = 0;
+	}
+	con_str("", b);
+}
+
 static int probe(void)
 {
 	char b[96], *p;
@@ -351,6 +384,28 @@ static int probe(void)
 	p = put_hex(put(b, "FMPSECURITY desc 3 -> "), r_sec, 8);
 	put_hex(put(p, "  SMU_INIT -> "), r_smu, 8);
 	con_str("FIRMWARE", b);
+
+	/*
+	 * X3.8: still IS.SBFES on data-in. S-Boot powers the device down before
+	 * handing over and likely gates host clocks too (as Linux's
+	 * setup_clocks(off) does); X3 read TXPRDT 0x0C (no prefetch bit). Put
+	 * the host in the state ufs-exynos.c leaves it in with clocks on:
+	 * pre_setup_clocks(on), link_startup_notify(PRE) and init_host. All
+	 * host-side vendor registers; the link and the device stay as they are.
+	 */
+	vs_dump("VS BEFORE");
+	wr32(UFS_VS + VS_FORCE_HCS, (rd32(UFS_VS + VS_FORCE_HCS) & ~(1u << 4)) | 0xde0);
+	wr32(UFS_VS + VS_CLKSTOP, rd32(UFS_VS + VS_CLKSTOP) & ~0x17u);
+	wr32(UFS_VS + VS_UFS_ACG, rd32(UFS_VS + VS_UFS_ACG) | 1);
+	wr32(UFS_VS + VS_IOP_ACG, rd32(UFS_VS + VS_IOP_ACG) & ~1u);
+	wr32(UFS_VS + VS_REORDER, 0xa);
+	wr32(UFS_VS + VS_TXPRDT, 0x8000000c);	/* PRDT_PREFECT_EN | PRDT_SET_SIZE(12) */
+	wr32(UFS_VS + VS_RXPRDT, 0x0c);
+	wr32(UFS_VS + VS_NEXUS, 0xffffffff);
+	wr32(UFS_VS + VS_TMNEXUS, 0xffffffff);
+	wr32(UFS_VS + VS_BURST, 0x98000003);	/* WLU_EN | BURST_LEN(3) */
+	dsb();
+	vs_dump("VS AFTER");
 
 	/* Take over the transfer request list: stop, point at ours, run. */
 	hci_wr(REG_UTRLRSR, 0);
@@ -451,10 +506,14 @@ static int probe(void)
 	p = put_dec(put(b, "other nonzero bytes "), other);
 	put_dec(put(p, " from "), first_o);
 	con_str("UCD", b);
-	p = put_hex(put(b, "+38 "), rd32(UFS_VS + 0x38), 8);
-	p = put_hex(put(p, " +c0 "), rd32(UFS_VS + 0xc0), 8);
-	put_hex(put(p, " is "), hci(REG_IS), 8);
-	con_str("VENDOR", b);
+	p = put_hex(put(b, "is "), hci(REG_IS), 8);
+	p = put_hex(put(p, " vs_is "), rd32(UFS_VS + VS_IS), 8);
+	put_hex(put(p, " smu_abort "), rd32(UFS_VS + VS_SMU_ABORT), 8);
+	con_str("AFTER", b);
+	p = put_hex(put(b, "fsm "), rd32(UFS_VS + VS_FSM), 8);
+	p = put_hex(put(p, " dma0 "), rd32(UFS_VS + VS_DMA0), 8);
+	put_hex(put(p, " dma1 "), rd32(UFS_VS + VS_DMA1), 8);
+	con_str("", b);
 	if (rc || !(data[0] == 'E' && data[1] == 'F' && data[2] == 'I' && data[3] == ' '))
 		return 0;
 
@@ -524,7 +583,7 @@ void shim_main(uint64_t dtb)
 	if (!xp.fb_ok)
 		xp_reset();
 	con_clear(GREY);
-	con_title("EXYNOS X3.8 RUNS");
+	con_title("EXYNOS X3.9 RUNS");
 	con_str("MODEL", xp.model[0] ? xp.model : "(no DTB)");
 	p = put_hex(put(b, "IMG "), xp.image, 9);
 	put_dec(put(p, " size "), (uint32_t)(xp.image_end - xp.image));
@@ -535,7 +594,7 @@ void shim_main(uint64_t dtb)
 
 	int y = con_row();
 	con_set_row(24);
-	con_title(ok ? "EXYNOS X3.8: OK  " : "EXYNOS X3.8: STOP");
+	con_title(ok ? "EXYNOS X3.9: OK  " : "EXYNOS X3.9: STOP");
 	con_set_row(y);
 	con_skip();
 	int tick_y = con_row();
