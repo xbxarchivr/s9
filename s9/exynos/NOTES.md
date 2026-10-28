@@ -159,7 +159,23 @@ readback.
   /cpus reg values in the bits used (Aff1 * 4 + Aff0)**, so several cores
   share slots 0 and 4 and CPU0 looks in the wrong ones. Slot 4 shows '-'
   because CPU0 clears a slot just before each CPU_ON.
-- **X1.4** (QEMU ok, boot.img sha256 4633f73f..., flashed 2026-10-28 with verified readback, result pending): CPU0 hands
+- **X1.4** (QEMU ok, boot.img sha256 4633f73f..., flashed 2026-10-28 with verified readback): CPU0 hands
   each core its slot (= /cpus index) through `x_next_slot`, which `xentry.S`
   reads; no MPIDR arithmetic left. Rows show the core's real MPIDR_EL1 (in
   place of SCTLR).
+- **X1.4 result on the G960F (photo): the A55 cluster is answered.**
+  CPU0 MPIDR 0x81000000; CPU1-3 (/cpus reg 001-003) real MPIDR 0x81000100,
+  0x81000200, 0x81000300 (MT bit set, core number in Aff1: the /cpus reg values
+  are logical numbers the PSCI firmware translates). All four: MIDR 0x410FD051
+  (Cortex-A55 r0p1), MMFR0 0x00101122, **16K YES**, EL1, arrived in 0 ms.
+  **CPU4-7 (/cpus reg 100-103, Mongoose M3): CPU_ON returns 0, never arrive
+  (5 s each + 2 s).** SLOTS `-UUU----`, three squares.
+  **Correction:** the squares in X1.2/X1.3 were A55 cores (0x100 -> slot 4,
+  0x200 -> slot 0, 0x300 -> slot 4 under the old formula); no M3 core has run
+  our code yet. The "first M3 ran" reading above is wrong.
+  Guess (not verified): Samsung's EL3 accepts CPU_ON for the big cluster, but
+  its power domain / clock (CPUCL1) is left off by S-Boot and only Samsung's
+  kernel drivers (exynos-cpupm / CAL / ACPM) turn it on before hotplug.
+  Next: read TWRP's dmesg (its kernel brings the M3s up): how it starts them,
+  their MIDR, and whether arm64 cpufeature prints "SANITY CHECK: Unexpected
+  variation in SYS_ID_AA64MMFR0_EL1" (TGran16 is a strict field).
