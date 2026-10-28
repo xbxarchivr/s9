@@ -283,4 +283,19 @@ set before each doorbell. Then MBR, GPT header, partitions >= 64 MiB plus
 BOOT/RECOVERY, USERDATA/CACHE superblock type, and an end-to-end check: the
 first block of BOOT must be our own boot.img (ANDROID!, kernel_size = shim).
 QEMU: only the "no controller" path (stops at "requests still pending").
-boot.img sha256 b07eda09..., flashed 2026-10-28 with verified readback, result pending.
+boot.img sha256 b07eda09..., flashed 2026-10-28 with verified readback.
+
+**X3 result on the G960F (photo): STOP before any command, but the host is up.**
+Shim at 0x800A4000. UFSHCI ver 0x210 (2.1), cap 0x1303FF0F (16 slots),
+**HCE 0 but HCS 0x0000010F** (DP, UTRLRDY, UTMRLRDY, UCRDY; UPMCRS 1), IS 0,
+**UTRLRSR 1 with S-Boot's list at 0xEF002000**, DBR 0. Vendor: TXPRDT and
+RXPRDT 0x0C (= PRDT_SET_SIZE(12): 4 KB per PRDT entry, as assumed), NEXUS
+0x0000FFFF (S-Boot marked all 16 slots SCSI). io-coherency sysreg 0x11 (bits
+0x300 clear: UFS DMA not coherent; irrelevant with the MMU off). HCE reading 0
+on a running host = Linux's UFSHCI_QUIRK_BROKEN_HCE for Exynos; X3 gated on
+it and stopped.
+- **X3.1** (boot.img sha256 00be2332..., not flashed yet): same probe, gate
+  without HCE (DP + UTRLRDY + UCRDY + no pending requests).
+- M3 power research (separate session): `exynos/M3-POWER.md`, proposes an
+  X1.6 experiment (six PMU writes from Samsung's pmucal_lpm_init before
+  CPU_ON). Not reviewed or tried yet.

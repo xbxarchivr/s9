@@ -1,5 +1,5 @@
 /*
- * Galaxy S9 Exynos milestone X3: read-only probe of the internal UFS that
+ * Galaxy S9 Exynos milestone X3 (rev 1.1): read-only probe of the internal UFS that
  * S-Boot loaded us from. CPU0 only. Adapted from shim/ufs.c (SDM845 M3).
  *
  * Stock DT (rev26, from the boot.img dt section): ufs@0x11120000
@@ -263,8 +263,13 @@ static int probe(void)
 	put_hex(put(b, "io-coherency "), rd32(SYSREG_COH), 8);
 	con_str("SYSREG", b);
 
-	if (!(hce & 1) || !(hcs & HCS_DP) || !(hcs & HCS_UTRLRDY) || !(hcs & HCS_UCRDY)) {
-		con_str("STOP", "host off or not ready (S-Boot shut it down?)");
+	/*
+	 * X3 on the G960F: HCE read 0 while HCS was 0x10F and S-Boot's list was
+	 * running (Linux: UFSHCI_QUIRK_BROKEN_HCE for Exynos), so HCE says
+	 * nothing here. Ready = device present, both lists and UIC ready.
+	 */
+	if (!(hcs & HCS_DP) || !(hcs & HCS_UTRLRDY) || !(hcs & HCS_UCRDY)) {
+		con_str("STOP", "host not ready");
 		return 0;
 	}
 	if (hci(REG_UTRLDBR)) {
@@ -396,7 +401,7 @@ void shim_main(uint64_t dtb)
 	if (!xp.fb_ok)
 		xp_reset();
 	con_clear(GREY);
-	con_title("EXYNOS X3 RUNS");
+	con_title("EXYNOS X3.1 RUNS");
 	con_str("MODEL", xp.model[0] ? xp.model : "(no DTB)");
 	p = put_hex(put(b, "IMG "), xp.image, 9);
 	put_dec(put(p, " size "), (uint32_t)(xp.image_end - xp.image));
@@ -407,7 +412,7 @@ void shim_main(uint64_t dtb)
 
 	int y = con_row();
 	con_set_row(24);
-	con_title(ok ? "EXYNOS X3: OK  " : "EXYNOS X3: STOP");
+	con_title(ok ? "EXYNOS X3.1: OK  " : "EXYNOS X3.1: STOP");
 	con_set_row(y);
 	con_skip();
 	int tick_y = con_row();
