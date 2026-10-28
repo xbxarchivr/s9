@@ -517,3 +517,19 @@ then a root filesystem (UFS data path, or a RAM disk root while UFS is open).
   0102's PSCI psci-id, per-CPU GICv2 setup and cross-CPU SGIs all work.
   The XNU port now has SMP on the A55 cluster; the open item before userland
   is a root filesystem.
+
+## Root filesystem, step 1: RAM-disk PID 1 (X4.2)
+
+As on the sweet (NOTES.md 0021-0027): `tools/sweet-init.S` assembled with
+Ubuntu clang 18.1.3 (`clang -target arm64-apple-ios16.0 -c`, installed in
+WSL) and wrapped by `tools/mkinit.py` into a 16635-byte static ad-hoc signed
+Mach-O (`out/exynos/init/sweet-init`); mockfs serves the RAM disk itself as
+/sbin/launchd. Payload `out/exynos/payload-rd.bin` (16667664 bytes): RAM disk
+at 0x944d0000 (0x8000), cmdline `debug=0xc serial=3 cpus=4 keepsyms=1 -v
+rd=md0 sweettouch=0 sweetkeys=0 sweetusb=0 sweetbattery=0 sweetcpu=0`.
+X4.2 boot.img sha256 6b001223... (copy `out/exynos/boot-x4.2.img`), not
+flashed yet. Expected: "BSD root: md0", "load_init_program: attempting to
+load /sbin/launchd", "*** SWEET userspace: init running as PID 1 ***", then
+"SWEET init: still alive" every 5 s.
+Step 2 (a real iOS root) needs storage: the iOS 16 root is GBs, the RAM
+window 472 MB.
