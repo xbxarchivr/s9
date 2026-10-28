@@ -113,6 +113,7 @@
 #define RESP_FIELD	1024u	/* Exynos quirk: UTRD response offset in bytes */
 #define PRDT_FIELD	2048u	/* UTRD PRDT offset in bytes */
 #define DATA_OFF	8192u	/* data area in the last 8 KB of ucd */
+#define HIGH_DATA	0x8c0000000UL	/* X5.5: data buffer in the 0x880000000 bank */
 
 #define RUN_SECONDS	60
 
@@ -951,7 +952,13 @@ static int probe(void)
 	char b[128], *p;
 	uint32_t ocs = 0, st = 0, rc = 0;
 
-	data = ucd + DATA_OFF;
+	/*
+	 * X5.5: data buffer in the 2 GB bank above 4 GB, where TWRP's Linux keeps
+	 * its UFS buffers (UTRL 0x8_fce02000, data 0x8_ebb64000). The response
+	 * UPIU lands fine low in RAM, but data-in goes through the FMP engine,
+	 * possibly another bus master with its own window.
+	 */
+	data = (volatile uint8_t *)HIGH_DATA;
 	slot = 0;
 	dword_gran = -1;
 
@@ -1096,7 +1103,7 @@ void shim_main(uint64_t dtb)
 	if (!xp.fb_ok)
 		xp_reset();
 	con_clear(GREY);
-	con_title("EXYNOS X5.4 RUNS");
+	con_title("EXYNOS X5.5 RUNS");
 	con_str("MODEL", xp.model[0] ? xp.model : "(no DTB)");
 	p = put_hex(put(b, "IMG "), xp.image, 9);
 	put_dec(put(p, " size "), (uint32_t)(xp.image_end - xp.image));
@@ -1114,7 +1121,7 @@ void shim_main(uint64_t dtb)
 
 	int y = con_row();
 	con_set_row(24);
-	con_title(ok ? "EXYNOS X5.4: OK  " : "EXYNOS X5.4: STOP");
+	con_title(ok ? "EXYNOS X5.5: OK  " : "EXYNOS X5.5: STOP");
 	con_set_row(y);
 	con_skip();
 	int tick_y = con_row();
