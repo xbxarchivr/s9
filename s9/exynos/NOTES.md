@@ -1,4 +1,4 @@
-# Galaxy S9 Exynos (SM-G960F / G965F, Exynos 9810): working notes
+﻿# Galaxy S9 Exynos (SM-G960F / G965F, Exynos 9810): working notes
 
 The rest of `s9/` targets the Snapdragon S9 (SM-G9600, starqlte, SDM845). This
 directory is the Exynos port, started 2026-10-28. Shared, SoC-neutral shim code
@@ -679,4 +679,4 @@ is 32 bits.
 - **X5 flashed** (2026-10-28, boot.img `out/exynos/boot-x5.img` sha256 c4ca330b..., TWRP dd to BOOT sda10 from PowerShell, readback matched, phone rebooted into it). Result pending: pass = READ(10) LBA 1 buffer 0xA5 -> "EFI PART", IS.SBFES gone, GPT/partition list/BOOT self-check printed.
 
 - **X5 result (photo, 2026-10-28): UFS host re-init WORKS up to the device.** UFSP 000=0 008=4 010=EFE26492 01C=00040000, 100=0 108=4 110=0; phy-pmu 00010001 coh 00000311; FMPSECURITY 0, SMU_INIT 0; HOST RESET sw_rst 00; HCE 1 hcs 00000008; MCLK ~166.5 MHz period 0A; rx 2 lanes 2; init_cfg rc 0; **LINK STARTUP gen_err 0** (hcs 0000000F); hibern8 rc 0; post_init_cfg rc 0; utrl 0880FC000 ucd 0880FF000; **NOP OUT rc 0 ocs 00** (NOP IN came back). Stopped at **FDEV INIT rc 4 ocs 00 st FE** = "SET_FLAG fDeviceInit failed": transport OK, query response 0xFE = Invalid OPCODE.
-- **Cause: query function was in UPIU header byte 6 (the response byte) instead of byte 5** (Linux `UPIU_HEADER_DWORD(0, query_func, 0, 0)`). Fixed in `x5.c` query_flag; rebuilt `out/exynos/boot-x5.img` sha256 3ab5c190..., not flashed yet.
+- **Cause: query function was in UPIU header byte 6 (the response byte) instead of byte 5** (Linux `UPIU_HEADER_DWORD(0, query_func, 0, 0)`). Fixed in `x5.c` query_flag; rebuilt `out/exynos/boot-x5.img` sha256 3ab5c190..., flashed 2026-10-28 with verified readback (TWRP dd, PowerShell). Result pending.
