@@ -1,0 +1,720 @@
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index c7fff13..2660ad8 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -17,6 +17,16 @@
+  * Writes are refused unless boot-arg ufsrw=1 is set. Every write is checked
+  * against the partition bounds again right before it is issued, so nothing
+  * outside the named partition can be written.
++ *
++ * Galaxy S9 Exynos 9810 (/sweet-ufs compatible "samsung,exynos9810-ufs"):
++ * S-Boot powers the device down before jumping to us, so the host is set up
++ * from scratch the way Samsung's ufs-exynos.c does it (secure-firmware FMP/SMU
++ * calls, host software reset, vendor init, UniPro link startup with the
++ * ufs-cal-9810 tables, NOP OUT and fDeviceInit), as proven on the G960F by
++ * the shim stage s9/exynos/x5.c (X5.6). Its requests differ from the
++ * Qualcomm ones: offsets and lengths in bytes, response UPIU at 0x400, PRDT
++ * at 0x800 with 128-byte FMP entries of at most 4 KiB each, command type 0.
++ * The default partition there is "USERDATA".
+  */
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ #include <sys/param.h>
+@@ -66,14 +76,79 @@ extern void sweet_usb_probe(void);
+ #define REG_UTRLCLR     0x5c
+ #define REG_UTRLRSR     0x60
+ 
++#define REG_UTMRLBA     0x70
++#define REG_UTMRLBAU    0x74
++#define REG_UTMRLRSR    0x80
++#define REG_UIC_CMD     0x90
++#define REG_UIC_ARG1    0x94
++#define REG_UIC_ARG2    0x98
++#define REG_UIC_ARG3    0x9c
++
+ #define HCS_DP          (1u << 0)
+ #define HCS_UTRLRDY     (1u << 1)
++#define HCS_UCRDY       (1u << 3)
++#define IS_UCCS         (1u << 10)              /* UIC command completion */
+ #define CAP_64AS        (1u << 24)              /* 64-bit DMA addressing */
+ 
+ #define UFS_BLOCK       4096u
+ #define BOUNCE_SIZE     (1u << 20)
+ #define PRDT_CHUNK      (256u << 10)            /* PRDT byte count field: 18 bits */
+ #define PRDT_MAX        (BOUNCE_SIZE / PRDT_CHUNK)
++
++/* Exynos 9810: vendor HCI and M-PHY PMA inside the /sweet-ufs reg window. */
++#define EXY_VS          0x1100
++#define EXY_PMA         0x4000                  /* +0x140 per lane */
++#define EXY_UNIPRO      0x11110000ull
++#define EXY_UNIPRO_SIZE 0x8000
++#define EXY_PHY_PMU     0x14060724ull           /* bit 0: PHY isolation bypass */
++#define EXY_SYSREG_COH  0x11010700ull           /* bits 0x300: io-coherency */
++
++#define VS_TXPRDT       0x00
++#define VS_RXPRDT       0x04
++#define VS_1US_TO_CNT   0x0c
++#define VS_NEXUS        0x40
++#define VS_TMNEXUS      0x44
++#define VS_SW_RST       0x50
++#define VS_REORDER      0x60
++#define VS_BURST        0x6c
++#define VS_GPIO_OUT     0x70
++#define VS_V2P1_CTRL    0x8c
++#define VS_CLKSTOP      0xb0
++#define VS_FORCE_HCS    0xb4
++#define VS_UFS_ACG      0xfc
++#define VS_IOP_ACG      0x100
++
++#define CLK_STOP_CTRL_EN_ALL    0xde0u          /* FORCE_HCS: ...incl. UFSP_DRCG_EN */
++#define CLK_STOP_ALL            0x17u           /* CLKSTOP_CTRL */
++
++/* include/linux/smc.h, include/crypto/smu.h (universal9810) */
++#define SMC_CMD_FMP_SECURITY    0xc2001810ull
++#define SMC_CMD_SMU             0xc2001850ull
++#define SMU_EMBEDDED            0
++#define SMU_INIT                0
++#define CFG_DESCTYPE_3          3               /* 128-byte FMP PRDT entries */
++
++#define UIC_DME_GET             0x01
++#define UIC_DME_SET             0x02
++#define UIC_DME_PEER_SET        0x04
++#define UIC_DME_LINK_STARTUP    0x16
++#define UIC_MIB(a)              ((uint32_t)((a) & 0xffff) << 16)
++#define UIC_MIB_SEL(a, s)       (UIC_MIB(a) | ((s) & 0xffff))
++#define UNIP_LINKSTARTUP_RESULT 0x7854          /* GET_GENERRCODE_DIRECT */
++#define PA_AVAILTXDATALANES     0x1520
++#define PA_AVAILRXDATALANES     0x1540
++#define PA_HIBERN8TIME          0x15a7
++#define PA_TACTIVATE            0x15a8
++#define RX_MIN_ACTIVATETIME_CAP 0x008f
++#define PA_DBG_CLK_PERIOD       0x9514          /* UniPro MCLK period (ns) left by S-Boot */
++#define EXY_MCLK_FALLBACK       166500000u
++#define EXY_RX_LANE_0           4
++
++#define EXY_RESP_OFF            0x400u
++#define EXY_PRDT_OFF            0x800u
++#define EXY_PRDT_STRIDE         128u
++#define EXY_PRDT_CHUNK          UFS_BLOCK       /* TXPRDT/RXPRDT entry size 2^12 */
++#define EXY_PRDT_MAX            (BOUNCE_SIZE / EXY_PRDT_CHUNK)
+ #define CMD_TIMEOUT_NS  (5ull * NSEC_PER_SEC)
+ #define CMD_SPIN_NS     (50ull * NSEC_PER_USEC)
+ #define CMD_SLEEP_NS    (200ull * NSEC_PER_USEC)
+@@ -93,16 +168,27 @@ struct ucd {
+ 	} prdt[PRDT_MAX];
+ };
+ 
+-/* Layout of the contiguous DMA allocation. */
++/*
++ * Layout of the contiguous DMA allocation. Exynos also needs a task
++ * management list and a larger UCD (0x800 + 256 x 128-byte PRDT entries).
++ */
+ #define DMA_UTRL        0x0000                  /* 1 KiB aligned */
++#define DMA_UTMRL       0x0800                  /* Exynos: 1 KiB aligned */
+ #define DMA_UCD         0x1000                  /* 128 byte aligned */
+-#define DMA_BOUNCE      0x4000
++#define DMA_BOUNCE_QCOM 0x4000
++#define DMA_BOUNCE_EXY  0xc000
++#define DMA_BOUNCE      (su.bounce_off)
+ #define DMA_SIZE        (DMA_BOUNCE + BOUNCE_SIZE)
+ 
+ static struct {
+ 	vm_offset_t regs;
+ 	vm_offset_t dma;                        /* kernel VA of the DMA allocation */
+ 	uint64_t dma_pa;
++	uint32_t bounce_off;                    /* DMA_BOUNCE_QCOM / DMA_BOUNCE_EXY */
++	uint32_t ucd_size;                      /* bytes synced around each command */
++	bool exynos;                            /* Exynos 9810 host (see top) */
++	vm_offset_t unipro, pmu, coh;           /* Exynos: other register blocks */
++	uint32_t lanes;                         /* Exynos: connected data lanes */
+ 	uint8_t lun;
+ 	uint8_t tag;
+ 	uint64_t first_block, nblocks;          /* partition, in 4 KiB device blocks */
+@@ -151,37 +237,44 @@ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
+ {
+ 	struct utrd *utrd = (struct utrd *)(su.dma + DMA_UTRL);
+ 	struct ucd *ucd = (struct ucd *)(su.dma + DMA_UCD);
++	uint8_t *cmd = (uint8_t *)ucd;
++	const uint8_t *resp = su.exynos ? cmd + EXY_RESP_OFF : ucd->resp;
+ 	uint64_t ucd_pa = su.dma_pa + DMA_UCD, bounce_pa = su.dma_pa + DMA_BOUNCE;
+ 
+ 	assert(len <= BOUNCE_SIZE);
+ 	bzero(utrd, sizeof(*utrd));
+-	bzero(ucd, sizeof(*ucd));
+-
+-	ucd->cmd[0] = 0x01;                     /* COMMAND UPIU */
+-	ucd->cmd[1] = len ? (write ? 0x20 : 0x40) : 0x00;      /* W: data out, R: data in */
+-	ucd->cmd[2] = su.lun;
+-	ucd->cmd[3] = ++su.tag;
+-	ucd->cmd[12] = (uint8_t)(len >> 24);
+-	ucd->cmd[13] = (uint8_t)(len >> 16);
+-	ucd->cmd[14] = (uint8_t)(len >> 8);
+-	ucd->cmd[15] = (uint8_t)len;
+-	memcpy(&ucd->cmd[16], cdb, cdb_len);
+-
+-	/* DD: 1 = memory to device, 2 = device to memory. */
+-	utrd->dw0 = (1u << 28) | ((len ? (write ? 1u : 2u) : 0u) << 25) | (1u << 24);
++	bzero(ucd, su.ucd_size);
++
++	cmd[0] = 0x01;                          /* COMMAND UPIU */
++	cmd[1] = len ? (write ? 0x20 : 0x40) : 0x00;   /* W: data out, R: data in */
++	cmd[2] = su.lun;
++	cmd[3] = su.exynos ? 0 : ++su.tag;      /* Exynos: tag = slot, as ufshcd */
++	cmd[12] = (uint8_t)(len >> 24);
++	cmd[13] = (uint8_t)(len >> 16);
++	cmd[14] = (uint8_t)(len >> 8);
++	cmd[15] = (uint8_t)len;
++	memcpy(&cmd[16], cdb, cdb_len);
++
++	/*
++	 * DD: 1 = memory to device, 2 = device to memory. Command type 1 (UFS
++	 * storage) on Qualcomm; 0 on Exynos, as its Linux and S-Boot use.
++	 */
++	utrd->dw0 = (su.exynos ? 0 : 1u << 28) | ((len ? (write ? 1u : 2u) : 0u) << 25) | (1u << 24);
+ 	utrd->dw2 = 0x0f;                       /* OCS invalid until updated */
+ 	utrd->ucdba = (uint32_t)ucd_pa;
+ 	utrd->ucdbau = (uint32_t)(ucd_pa >> 32);
+-	utrd->resp = (512u / 4) << 16 | (512u / 4);
++	utrd->resp = su.exynos ? EXY_RESP_OFF << 16 | EXY_RESP_OFF : (512u / 4) << 16 | (512u / 4);
+ 	if (len) {
+-		uint32_t n = 0;
+-		for (uint32_t done = 0; done < len; done += PRDT_CHUNK, n++) {
+-			uint32_t chunk = MIN(PRDT_CHUNK, len - done);
+-			ucd->prdt[n].addr_lo = (uint32_t)(bounce_pa + done);
+-			ucd->prdt[n].addr_hi = (uint32_t)((bounce_pa + done) >> 32);
+-			ucd->prdt[n].dbc = chunk - 1;
++		uint32_t n = 0, step = su.exynos ? EXY_PRDT_CHUNK : PRDT_CHUNK;
++		for (uint32_t done = 0; done < len; done += step, n++) {
++			uint32_t *e = su.exynos ?
++			    (uint32_t *)(void *)(cmd + EXY_PRDT_OFF + n * EXY_PRDT_STRIDE) : &ucd->prdt[n].addr_lo;
++			e[0] = (uint32_t)(bounce_pa + done);
++			e[1] = (uint32_t)((bounce_pa + done) >> 32);
++			e[3] = MIN(step, len - done) - 1;       /* data byte count - 1 */
+ 		}
+-		utrd->prdt = (1024u / 4) << 16 | n;
++		/* [31:16] offset, [15:0] length: bytes on Exynos (PRDT_BYTE_GRAN) */
++		utrd->prdt = su.exynos ? EXY_PRDT_OFF << 16 | n * EXY_PRDT_STRIDE : (1024u / 4) << 16 | n;
+ 	}
+ 
+ 	if (su.cache) {
+@@ -194,7 +287,7 @@ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
+ 		}
+ 	} else {
+ 		dma_sync(DMA_UTRL, sizeof(*utrd));
+-		dma_sync(DMA_UCD, sizeof(*ucd));
++		dma_sync(DMA_UCD, su.ucd_size);
+ 	}
+ 	if (len) {
+ 		if (su.cache && write) {
+@@ -242,16 +335,17 @@ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
+ 	if (su.cache) {
+ 		dma_sync(DMA_UCD + offsetof(struct ucd, resp), sizeof(ucd->resp));
+ 	} else {
+-		dma_sync(DMA_UCD, sizeof(*ucd));
++		dma_sync(DMA_UCD, su.ucd_size);
+ 	}
+ 	if (len && !(su.cache && write)) {
+ 		dma_sync(DMA_BOUNCE, len);
+ 	}
+ 
+ 	uint32_t ocs = utrd->dw2 & 0xff;
+-	if (ocs || ucd->resp[0] != 0x21 || ucd->resp[6] || ucd->resp[7]) {
+-		printf("SWEET UFS: command 0x%02x failed: ocs 0x%x upiu 0x%x response 0x%x status 0x%x\n",
+-		    cdb[0], ocs, ucd->resp[0], ucd->resp[6], ucd->resp[7]);
++	if (ocs || resp[0] != 0x21 || resp[6] || resp[7]) {
++		printf("SWEET UFS: command 0x%02x failed: ocs 0x%x upiu 0x%x response 0x%x status 0x%x"
++		    " sense %x/%02x/%02x\n", cdb[0], ocs, resp[0], resp[6], resp[7],
++		    resp[36] & 0xf, resp[46], resp[47]);
+ 		return EIO;
+ 	}
+ 	return 0;
+@@ -354,6 +448,384 @@ ufs_find_partition(const char *want)
+ 	return ENOENT;
+ }
+ 
++/* ---- Exynos 9810 host bring-up (s9/exynos/x5.c, ufs-exynos.c, ufs-cal-9810.c) ---- */
++
++#define vs_rd(o)        ufs_rd(EXY_VS + (o))
++#define vs_wr(o, v)     ufs_wr(EXY_VS + (o), (v))
++
++static inline uint32_t
++io_rd(vm_offset_t va)
++{
++	return *(volatile uint32_t *)va;
++}
++
++static inline void
++io_wr(vm_offset_t va, uint32_t v)
++{
++	*(volatile uint32_t *)va = v;
++}
++
++/* SMCCC 1.0 call to the secure firmware; x0 is the result. */
++static uint64_t
++exy_smc(uint64_t fid, uint64_t a1, uint64_t a2, uint64_t a3)
++{
++	register uint64_t x0 __asm__("x0") = fid;
++	register uint64_t x1 __asm__("x1") = a1;
++	register uint64_t x2 __asm__("x2") = a2;
++	register uint64_t x3 __asm__("x3") = a3;
++	__asm__ volatile("smc #0" : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3) : :
++	    "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13",
++	    "x14", "x15", "x16", "x17", "cc", "memory");
++	return x0;
++}
++
++/* Spin until (reg & mask) == want or ns pass. */
++static bool
++exy_wait(uint32_t off, uint32_t mask, uint32_t want, uint64_t ns)
++{
++	uint64_t deadline;
++	nanoseconds_to_absolutetime(ns, &deadline);
++	deadline += mach_absolute_time();
++	while ((ufs_rd(off) & mask) != want) {
++		if (mach_absolute_time() > deadline) {
++			return false;
++		}
++		delay(1);
++	}
++	return true;
++}
++
++/* One UIC command; returns the UIC result code, or -1/-2 (not ready/timeout). */
++static int
++exy_uic(uint32_t op, uint32_t arg1, uint32_t arg3, uint32_t *get)
++{
++	if (!(ufs_rd(REG_HCS) & HCS_UCRDY)) {
++		return -1;
++	}
++	ufs_wr(REG_IS, ufs_rd(REG_IS));
++	ufs_wr(REG_UIC_ARG1, arg1);
++	ufs_wr(REG_UIC_ARG2, 0);
++	ufs_wr(REG_UIC_ARG3, arg3);
++	__builtin_arm_dsb(0xf);
++	delay(1000);                            /* ~1 ms before each DME, as the cal does */
++	ufs_wr(REG_UIC_CMD, op);
++	if (!exy_wait(REG_IS, IS_UCCS, IS_UCCS, NSEC_PER_SEC)) {
++		return -2;
++	}
++	ufs_wr(REG_IS, IS_UCCS);
++	if (get) {
++		*get = ufs_rd(REG_UIC_ARG3);
++	}
++	return (int)(ufs_rd(REG_UIC_ARG2) & 0xff);
++}
++
++static int
++exy_dme_set(uint32_t attr, uint32_t val)
++{
++	return exy_uic(UIC_DME_SET, attr, val, NULL);
++}
++
++static int
++exy_dme_get(uint32_t attr, uint32_t *val)
++{
++	return exy_uic(UIC_DME_GET, attr, 0, val);
++}
++
++/* M-PHY PMA write with MPHY_APBCLK_STOP lifted around it (phy_pma_writel). */
++static void
++exy_pma_write(uint32_t reg, uint32_t val)
++{
++	uint32_t c = vs_rd(VS_CLKSTOP);
++	vs_wr(VS_CLKSTOP, c & ~(1u << 3));
++	ufs_wr(EXY_PMA + reg, val);
++	vs_wr(VS_CLKSTOP, c | (1u << 3));
++}
++
++enum {
++	L_PCS_COMN = 1, L_PCS_RX, L_PCS_TX, L_PCS_RX_PRD, L_PCS_TX_PRD, L_UNIPRO_STD,
++	L_UNIPRO_DBG, L_UNIPRO_DBG_PRD, L_PMA_COMN, L_PMA_TRSV, L_COMMON_WAIT,
++};
++
++struct exy_cfg {
++	uint16_t addr;
++	uint32_t val;
++	uint8_t lyr;
++};
++
++/* ufs-cal-9810.c init_cfg; *_PRD entries take the MCLK period instead of val */
++static const struct exy_cfg exy_init_cfg[] = {
++	{ 0x9514, 0x00, L_UNIPRO_DBG_PRD }, { 0x0200, 0x40, L_PCS_COMN },
++	{ 0x0012, 0x00, L_PCS_RX_PRD }, { 0x00aa, 0x00, L_PCS_TX_PRD },
++	{ 0x005c, 0x38, L_PCS_RX }, { 0x000f, 0x00, L_PCS_RX }, { 0x0065, 0x01, L_PCS_RX },
++	{ 0x0069, 0x01, L_PCS_RX }, { 0x0021, 0x00, L_PCS_RX }, { 0x0022, 0x00, L_PCS_RX },
++	{ 0x0084, 0x01, L_PCS_RX }, { 0x0004, 0x01, L_PCS_TX }, { 0x008f, 0x3e, L_PCS_TX },
++	{ 0x0200, 0x00, L_PCS_COMN }, { 0x9536, 0x4e20, L_UNIPRO_DBG },
++	{ 0x9564, 0x2e820183, L_UNIPRO_DBG }, { 0x155e, 0x00, L_UNIPRO_STD },
++	{ 0x3000, 0x00, L_UNIPRO_STD }, { 0x3001, 0x01, L_UNIPRO_STD },
++	{ 0x4021, 0x01, L_UNIPRO_STD }, { 0x4020, 0x01, L_UNIPRO_STD },
++	{ 0x008c, 0x80, L_PMA_COMN }, { 0x0074, 0x10, L_PMA_COMN },
++	{ 0x0110, 0xb5, L_PMA_TRSV }, { 0x0134, 0x43, L_PMA_TRSV }, { 0x016c, 0x20, L_PMA_TRSV },
++	{ 0x0178, 0xc0, L_PMA_TRSV }, { 0x00e0, 0x12, L_PMA_TRSV }, { 0x0164, 0x58, L_PMA_TRSV },
++	{ 0x01b0, 0x18, L_PMA_TRSV }, { 0x008c, 0xc0, L_PMA_COMN }, { 0x008c, 0x00, L_PMA_COMN },
++	{ 0x0000, 0xc8, L_COMMON_WAIT },
++};
++
++/* ufs-cal-9810.c post_init_cfg */
++static const struct exy_cfg exy_post_init_cfg[] = {
++	{ 0x9529, 0x01, L_UNIPRO_DBG }, { 0x15a4, 0xfa, L_UNIPRO_STD },
++	{ 0x9529, 0x00, L_UNIPRO_DBG }, { 0x0200, 0x40, L_PCS_COMN },
++	{ 0x0035, 0x05, L_PCS_RX }, { 0x0073, 0x01, L_PCS_RX }, { 0x0041, 0x02, L_PCS_RX },
++	{ 0x0042, 0xac, L_PCS_RX }, { 0x0200, 0x00, L_PCS_COMN },
++};
++
++static int
++exy_apply_cfg(const struct exy_cfg *cfg, unsigned n, uint32_t period)
++{
++	for (unsigned j = 0; j < n; j++) {
++		uint32_t a = cfg[j].addr, v = cfg[j].val;
++		for (uint32_t i = 0; i < su.lanes; i++) {
++			int r = 0;
++			switch (cfg[j].lyr) {
++			case L_PCS_COMN:
++			case L_UNIPRO_STD:
++			case L_UNIPRO_DBG:
++				r = i ? 0 : exy_dme_set(UIC_MIB(a), v);
++				break;
++			case L_UNIPRO_DBG_PRD:
++				r = i ? 0 : exy_dme_set(UIC_MIB(a), period);
++				break;
++			case L_PCS_RX:
++				r = exy_dme_set(UIC_MIB_SEL(a, EXY_RX_LANE_0 + i), v);
++				break;
++			case L_PCS_TX:
++				r = exy_dme_set(UIC_MIB_SEL(a, i), v);
++				break;
++			case L_PCS_RX_PRD:
++				r = exy_dme_set(UIC_MIB_SEL(a, EXY_RX_LANE_0 + i), period);
++				break;
++			case L_PCS_TX_PRD:
++				r = exy_dme_set(UIC_MIB_SEL(a, i), period);
++				break;
++			case L_PMA_COMN:
++				if (i == 0) {
++					exy_pma_write(a, v);
++				}
++				break;
++			case L_PMA_TRSV:
++				exy_pma_write(a + 0x140 * i, v);
++				break;
++			case L_COMMON_WAIT:
++				if (i == 0) {
++					delay(v);
++				}
++				break;
++			}
++			if (r) {
++				printf("SWEET UFS: cal entry %u (0x%04x) lane %u: %d\n", j, a, i, r);
++				return EIO;
++			}
++		}
++	}
++	return 0;
++}
++
++/* ufs_cal_calib_hibern8_values */
++static int
++exy_calib_hibern8(void)
++{
++	uint32_t hw_min_tact, peer_tact, h8_time;
++
++	if (exy_dme_get(UIC_MIB_SEL(RX_MIN_ACTIVATETIME_CAP, EXY_RX_LANE_0), &hw_min_tact) ||
++	    exy_dme_get(UIC_MIB(PA_TACTIVATE), &peer_tact) ||
++	    exy_dme_get(UIC_MIB(PA_HIBERN8TIME), &h8_time)) {
++		return EIO;
++	}
++	if (peer_tact >= hw_min_tact &&
++	    exy_uic(UIC_DME_PEER_SET, UIC_MIB(PA_TACTIVATE), peer_tact + 1, NULL)) {
++		return EIO;
++	}
++	return exy_dme_set(UIC_MIB(PA_HIBERN8TIME), h8_time + 1) ? EIO : 0;
++}
++
++/*
++ * Everything up to a running UniPro link, from the state S-Boot leaves
++ * (device powered down, host gated). The request lists are set by
++ * ufs_take_over_host() afterwards.
++ */
++static int
++exy_link_up(void)
++{
++	io_wr(su.pmu, io_rd(su.pmu) | 1u);                              /* PHY isolation bypass */
++	io_wr(su.coh, (io_rd(su.coh) & ~0x300u) | 0x300u);             /* io-coherency */
++
++	/* FMPSECURITY & SMU (exynos_ufs_init) */
++	uint64_t sec = exy_smc(SMC_CMD_FMP_SECURITY, 0, SMU_EMBEDDED, CFG_DESCTYPE_3);
++	uint64_t smu = exy_smc(SMC_CMD_SMU, SMU_INIT, SMU_EMBEDDED, 0);
++	if (sec || smu) {
++		printf("SWEET UFS: FMP security %llx, SMU init %llx\n", sec, smu);
++	}
++
++	/* host software reset (exynos_ufs_host_reset) */
++	vs_wr(VS_FORCE_HCS, vs_rd(VS_FORCE_HCS) & ~(1u << 4));
++	vs_wr(VS_SW_RST, 0x3);
++	if (!exy_wait(EXY_VS + VS_SW_RST, 0x3, 0, NSEC_PER_MSEC)) {
++		printf("SWEET UFS: host software reset timed out\n");
++		return EIO;
++	}
++
++	/* init_host + clocks as pre_setup_clocks(on) / link_startup_notify(PRE) */
++	vs_wr(VS_REORDER, 0xa);
++	vs_wr(VS_TXPRDT, 0x8000000c);           /* PRDT_PREFECT_EN | PRDT_SET_SIZE(12) */
++	vs_wr(VS_RXPRDT, 0x0c);
++	vs_wr(VS_NEXUS, 0xffffffff);
++	vs_wr(VS_TMNEXUS, 0xffffffff);
++	vs_wr(VS_BURST, 0x98000003);            /* WLU_EN | BURST_LEN(3) */
++	vs_wr(VS_IOP_ACG, vs_rd(VS_IOP_ACG) & ~1u);
++	vs_wr(VS_UFS_ACG, vs_rd(VS_UFS_ACG) | 1u);
++	vs_wr(VS_FORCE_HCS, vs_rd(VS_FORCE_HCS) | CLK_STOP_CTRL_EN_ALL);
++	vs_wr(VS_CLKSTOP, vs_rd(VS_CLKSTOP) & ~CLK_STOP_ALL);
++	__builtin_arm_dsb(0xf);
++
++	/* device reset_n (exynos_ufs_dev_hw_reset) */
++	vs_wr(VS_GPIO_OUT, 0);
++	delay(5);
++	vs_wr(VS_GPIO_OUT, 1);
++
++	/* host controller enable */
++	ufs_wr(REG_HCE, 0);
++	ufs_wr(REG_HCE, 1);
++	delay(1000);
++	if (!exy_wait(REG_HCE, 1, 1, NSEC_PER_SEC) ||
++	    !exy_wait(REG_HCS, HCS_UCRDY, HCS_UCRDY, NSEC_PER_SEC)) {
++		printf("SWEET UFS: host enable failed (hce 0x%x hcs 0x%x)\n",
++		    ufs_rd(REG_HCE), ufs_rd(REG_HCS));
++		return EIO;
++	}
++
++	/* UniPro MCLK: S-Boot leaves its period in PA_DBG_CLK_PERIOD */
++	uint32_t period = 0, mclk = EXY_MCLK_FALLBACK;
++	if (exy_dme_get(UIC_MIB(PA_DBG_CLK_PERIOD), &period) == 0 && period) {
++		mclk = 1000000000u / period;
++	}
++	period = 1000000000u / mclk;
++	vs_wr(VS_V2P1_CTRL, vs_rd(VS_V2P1_CTRL) | (1u << 16));         /* IA_TICK_SEL */
++	vs_wr(VS_1US_TO_CNT, (mclk / 1000000u) & 0x3ff);
++
++	uint32_t rx = 0, tx = 0;
++	su.lanes = 2;
++	if (exy_dme_get(UIC_MIB(PA_AVAILRXDATALANES), &rx) == 0 && rx) {
++		su.lanes = rx;
++	}
++	if (exy_dme_get(UIC_MIB(PA_AVAILTXDATALANES), &tx) == 0 && tx && tx < su.lanes) {
++		su.lanes = tx;
++	}
++
++	int error = exy_apply_cfg(exy_init_cfg, sizeof(exy_init_cfg) / sizeof(exy_init_cfg[0]), period);
++	if (error) {
++		return error;
++	}
++	int r = exy_uic(UIC_DME_LINK_STARTUP, 0, 0, NULL);
++	uint32_t gen_err = io_rd(su.unipro + UNIP_LINKSTARTUP_RESULT);
++	if (r < 0 || gen_err || !(ufs_rd(REG_HCS) & HCS_DP)) {
++		printf("SWEET UFS: link startup failed (%d, gen_err 0x%x, hcs 0x%x)\n",
++		    r, gen_err, ufs_rd(REG_HCS));
++		return EIO;
++	}
++	error = exy_calib_hibern8();
++	if (!error) {
++		error = exy_apply_cfg(exy_post_init_cfg,
++		    sizeof(exy_post_init_cfg) / sizeof(exy_post_init_cfg[0]), period);
++	}
++	printf("SWEET UFS: Exynos link up: mclk %u Hz, %u lanes, hcs 0x%x\n",
++	    mclk, su.lanes, ufs_rd(REG_HCS));
++	return error;
++}
++
++/*
++ * NOP OUT or a flag query in slot 0 (command type 1, NEXUS bit cleared as
++ * exynos_ufs_set_nexus_t_xfer_req does for device-management requests).
++ * The caller fills the request UPIU at the UCD; returns the response UPIU.
++ */
++static const uint8_t *
++exy_devman(uint8_t resp_type)
++{
++	struct utrd *utrd = (struct utrd *)(su.dma + DMA_UTRL);
++	uint8_t *cmd = (uint8_t *)(su.dma + DMA_UCD);
++	uint64_t ucd_pa = su.dma_pa + DMA_UCD;
++
++	bzero(utrd, sizeof(*utrd));
++	bzero(cmd + EXY_RESP_OFF, EXY_RESP_OFF);
++	utrd->dw0 = (1u << 28) | (1u << 24);
++	utrd->dw2 = 0x0f;
++	utrd->ucdba = (uint32_t)ucd_pa;
++	utrd->ucdbau = (uint32_t)(ucd_pa >> 32);
++	utrd->resp = EXY_RESP_OFF << 16 | EXY_RESP_OFF;
++	dma_sync(DMA_UTRL, sizeof(*utrd));
++	dma_sync(DMA_UCD, EXY_PRDT_OFF);
++	__builtin_arm_dsb(0xf);
++
++	vs_wr(VS_NEXUS, vs_rd(VS_NEXUS) & ~1u);
++	ufs_wr(REG_UTRLDBR, 1);
++	bool done = exy_wait(REG_UTRLDBR, 1, 0, 600 * NSEC_PER_MSEC);
++	if (!done) {
++		ufs_wr(REG_UTRLCLR, ~1u);
++	}
++	ufs_wr(REG_IS, ufs_rd(REG_IS));
++	vs_wr(VS_NEXUS, vs_rd(VS_NEXUS) | 1u);
++	dma_sync(DMA_UTRL, sizeof(*utrd));
++	dma_sync(DMA_UCD, EXY_PRDT_OFF);
++	const uint8_t *resp = cmd + EXY_RESP_OFF;
++	return done && (utrd->dw2 & 0xff) == 0 && resp[0] == resp_type ? resp : NULL;
++}
++
++/* fDeviceInit flag: opcode 0x06 SET_FLAG (write), 0x05 READ_FLAG (read). */
++static const uint8_t *
++exy_query_fdeviceinit(uint8_t opcode)
++{
++	uint8_t *cmd = (uint8_t *)(su.dma + DMA_UCD);
++
++	bzero(cmd, EXY_RESP_OFF);
++	cmd[0] = 0x16;                          /* QUERY REQUEST */
++	cmd[5] = opcode == 0x06 ? 0x81 : 0x01;  /* query function: standard write / read */
++	cmd[12] = opcode;
++	cmd[13] = 0x01;                         /* IDN fDeviceInit */
++	return exy_devman(0x36);                /* QUERY RESPONSE */
++}
++
++/* After the link: NOP OUT until NOP IN, then fDeviceInit set and cleared. */
++static int
++exy_device_init(void)
++{
++	uint8_t *cmd = (uint8_t *)(su.dma + DMA_UCD);
++	const uint8_t *r = NULL;
++
++	for (int i = 0; i < 10 && !r; i++) {
++		bzero(cmd, EXY_RESP_OFF);       /* NOP OUT: all zero */
++		r = exy_devman(0x20);
++	}
++	if (!r) {
++		printf("SWEET UFS: no NOP IN from the device\n");
++		return EIO;
++	}
++	r = exy_query_fdeviceinit(0x06);
++	if (!r || r[6]) {
++		printf("SWEET UFS: SET_FLAG fDeviceInit failed (response 0x%x)\n", r ? r[6] : 0xff);
++		return EIO;
++	}
++	uint64_t deadline;
++	nanoseconds_to_absolutetime(NSEC_PER_SEC, &deadline);
++	deadline += mach_absolute_time();
++	do {
++		r = exy_query_fdeviceinit(0x05);
++		if (r && !r[6] && !(r[23] & 1)) {
++			return 0;
++		}
++		delay(1000);
++	} while (mach_absolute_time() < deadline);
++	printf("SWEET UFS: fDeviceInit did not clear\n");
++	return EIO;
++}
++
+ static int
+ ufs_take_over_host(void)
+ {
+@@ -375,6 +847,13 @@ ufs_take_over_host(void)
+ 	ufs_wr(REG_IE, 0);                      /* polled operation */
+ 	ufs_wr(REG_IS, ufs_rd(REG_IS));
+ 	ufs_wr(REG_UTRLRSR, 0);
++	if (su.exynos) {                        /* after our reset: no task list yet */
++		uint64_t tm = su.dma_pa + DMA_UTMRL;
++		ufs_wr(REG_UTMRLRSR, 0);
++		ufs_wr(REG_UTMRLBA, (uint32_t)tm);
++		ufs_wr(REG_UTMRLBAU, (uint32_t)(tm >> 32));
++		ufs_wr(REG_UTMRLRSR, 1);
++	}
+ 	uint64_t list = su.dma_pa + DMA_UTRL;
+ 	ufs_wr(REG_UTRLBA, (uint32_t)list);
+ 	ufs_wr(REG_UTRLBAU, (uint32_t)(list >> 32));
+@@ -589,7 +1068,8 @@ sweet_ufs_init(void)
+ {
+ 	DTEntry node;
+ 	uintptr_t const *reg = NULL;
+-	unsigned int size = 0;
++	char const *compat = NULL;
++	unsigned int size = 0, csize = 0;
+ 	char want[64] = "userdata";
+ 	int error;
+ 
+@@ -599,23 +1079,36 @@ sweet_ufs_init(void)
+ 		printf("SWEET UFS: no /sweet-ufs node in the device tree\n");
+ 		/*
+ 		 * The input drivers are started at the end of a successful UFS
+-		 * attach below. Galaxy S9 Exynos has no UFS node (yet), so start
+-		 * them here too: otherwise the keys never poll.
++		 * attach below; without a UFS node start them here too:
++		 * otherwise the keys never poll.
+ 		 */
+ 		sweet_keys_init();
+ 		sweet_touch_init();
+ 		return ENXIO;
+ 	}
++	su.exynos = SecureDTGetProperty(node, "compatible", (void const **)&compat, &csize) == kSuccess &&
++	    csize && strncmp(compat, "samsung,exynos9810-ufs", csize) == 0;
++	if (su.exynos) {
++		strlcpy(want, "USERDATA", sizeof(want));        /* Samsung GPT names */
++	}
+ 	PE_parse_boot_argn("ufsroot", want, sizeof(want));
+ 	uint32_t rw = 0;
+ 	PE_parse_boot_argn("ufsrw", &rw, sizeof(rw));
+ 	uint32_t cache = 0, wait = 0;
+ 	PE_parse_boot_argn("ufscache", &cache, sizeof(cache));
+ 	PE_parse_boot_argn("ufswait", &wait, sizeof(wait));
+-	su.cache = (cache == 1);
++	su.cache = (cache == 1) && !su.exynos;  /* ufscache knows only the Qualcomm UCD */
+ 	su.wait = (wait == 1);
++	su.bounce_off = su.exynos ? DMA_BOUNCE_EXY : DMA_BOUNCE_QCOM;
++	su.ucd_size = su.exynos ? EXY_PRDT_OFF + EXY_PRDT_MAX * EXY_PRDT_STRIDE : sizeof(struct ucd);
++	assert(DMA_UCD + su.ucd_size <= su.bounce_off);
+ 
+ 	su.regs = ml_io_map(reg[0], reg[1]);
++	if (su.exynos) {
++		su.unipro = ml_io_map(EXY_UNIPRO, EXY_UNIPRO_SIZE);
++		su.pmu = ml_io_map(trunc_page_64(EXY_PHY_PMU), PAGE_SIZE) + (EXY_PHY_PMU & PAGE_MASK);
++		su.coh = ml_io_map(trunc_page_64(EXY_SYSREG_COH), PAGE_SIZE) + (EXY_SYSREG_COH & PAGE_MASK);
++	}
+ 	if (kmem_alloc_contig(kernel_map, &su.dma, DMA_SIZE, PAGE_MASK, 0, 0,
+ 	    KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
+ 		printf("SWEET UFS: no contiguous DMA memory\n");
+@@ -630,11 +1123,27 @@ sweet_ufs_init(void)
+ 	su.secsize = DEV_BSIZE;
+ 
+ 	lck_mtx_lock(&sweet_ufs_lock);
+-	error = ufs_take_over_host();
++	error = su.exynos ? exy_link_up() : 0;
++	if (!error) {
++		error = ufs_take_over_host();
++	}
++	if (!error && su.exynos) {
++		error = exy_device_init();
++	}
+ 	if (!error) {
+ 		static const uint8_t tur[6] = { 0x00 };
+-		/* The first command after the bootloader may report a unit attention. */
+-		for (int i = 0; i < 3 && (error = ufs_scsi(tur, sizeof(tur), 0, false)); i++) {
++		static const uint8_t ssu_active[6] = { 0x1b, 0, 0, 0, 0x10, 0 };
++		/*
++		 * The first command after the bootloader (or our reset) may report a
++		 * unit attention. On Exynos, S-Boot powered the device down: wake it
++		 * with START STOP UNIT (ACTIVE) to the UFS Device W-LUN.
++		 */
++		for (int i = 0; i < (su.exynos ? 6 : 3) && (error = ufs_scsi(tur, sizeof(tur), 0, false)); i++) {
++			if (su.exynos && i == 1) {
++				su.lun = 0xd0;
++				(void)ufs_scsi(ssu_active, sizeof(ssu_active), 0, false);
++				su.lun = 0;
++			}
+ 		}
+ 	}
+ 	if (!error) {
+@@ -642,6 +1151,10 @@ sweet_ufs_init(void)
+ 	}
+ 	lck_mtx_unlock(&sweet_ufs_lock);
+ 	if (error) {
++		if (su.exynos) {
++			sweet_keys_init();      /* as for a missing node: keys must still poll */
++			sweet_touch_init();
++		}
+ 		return error;
+ 	}
+ 

@@ -21,7 +21,8 @@ was read on the G960F by the shim stages X1-X3 (exynos/NOTES.md):
            PPI 11 = INTID 27; counter 26 MHz.
   Display  framebuffer 0xcc000000, 1440x2960 a8r8g8b8 (the shim switches the
            DECON-F HW trigger on before jumping to XNU).
-  UFS      no node: data DMA does not work yet (X3.x).
+  UFS      /sweet-ufs compatible samsung,exynos9810-ufs, HCI 0x11120000+0x8000
+           (patch 0106 re-inits the host as shim stage X5.6 did on the phone).
 """
 import os, sys
 
@@ -48,6 +49,7 @@ VTIMER_INTID = 27
 GICD, GICD_SIZE = 0x10101000, 0x1000
 GICC, GICC_SIZE = 0x10102000, 0x2000
 FB, FB_SIZE = 0xcc000000, 0x1100000
+UFS_HCI, UFS_HCI_SIZE = 0x11120000, 0x8000
 A55_MPIDR = (0x000, 0x100, 0x200, 0x300)
 
 
@@ -104,7 +106,11 @@ def build(scale=3, small=False):
     fbcon = find(root, 'sweet-fbcon')
     set_prop(fbcon, 'reg', u64(FB, FB_SIZE))
 
-    root.children = [c for c in root.children if c.name != 'sweet-ufs']
+    # bsd/dev/sweet_ufs.c (patch 0106): Exynos host re-initialised by the
+    # kernel; reg covers standard HCI, vendor HCI (+0x1100) and M-PHY PMA (+0x4000).
+    ufs = find(root, 'sweet-ufs')
+    set_prop(ufs, 'compatible', cstr('samsung,exynos9810-ufs'))
+    set_prop(ufs, 'reg', u64(UFS_HCI, UFS_HCI_SIZE))
 
     # SweetPlatformExpert matches 'xiaomi,sweet'; the kernel's Exynos gates
     # (Qualcomm-only drivers off) look for 'samsung,exynos9810'.
