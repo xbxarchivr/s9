@@ -431,7 +431,7 @@ Source: LineageOS android_kernel_samsung_universal9810, branch lineage-17.1
 Inference (not verified): after S-Boot hands over, the FMP/SMU state does not
 allow normal-world data DMA until the OS makes those two calls; that would
 give exactly IS.SBFES on data while descriptor/response DMA works.
-- **X3.8** (boot.img sha256 1e673b9b..., not flashed yet): makes the two
+- **X3.8** (boot.img sha256 1e673b9b..., flashed 2026-10-28 with verified readback, result pending): makes the two
   calls Samsung's driver makes before any I/O, FMP_SECURITY(0, SMU_EMBEDDED,
   CFG_DESCTYPE_3) and SMU(SMU_INIT, SMU_EMBEDDED), and shows their return
   values (0 = success); UCD layout now Samsung's (response at 1024, PRDT at
