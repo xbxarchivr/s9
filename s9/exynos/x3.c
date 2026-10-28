@@ -1,5 +1,5 @@
 /*
- * Galaxy S9 Exynos milestone X3 (rev 1.9): read-only probe of the internal UFS that
+ * Galaxy S9 Exynos milestone X3 (rev 1.10): read-only probe of the internal UFS that
  * S-Boot loaded us from. CPU0 only. Adapted from shim/ufs.c (SDM845 M3).
  *
  * Stock DT (rev26, from the boot.img dt section): ufs@0x11120000
@@ -88,7 +88,15 @@ struct utrd {
 
 static volatile struct utrd utrl[32] __attribute__((aligned(4096)));
 static volatile uint8_t ucd[16384] __attribute__((aligned(4096)));
-static volatile uint8_t data[BLOCK] __attribute__((aligned(4096)));
+/*
+ * X3.9 on the G960F: host registers now as Linux sets them, SMU abort info
+ * 0, still IS.SBFES on every data-in, while the host's response UPIU DMA
+ * into ucd works. So the data lands INSIDE ucd now (last 8 KB, 4 KB
+ * aligned): data arriving = an address/window problem; SBFES again = the
+ * host's data path itself (then a full host re-init).
+ */
+#define DATA_OFF	8192u
+static volatile uint8_t *data;	/* = ucd + DATA_OFF, set in probe() */
 static volatile int in_exc;
 
 /* found by the first TEST UNIT READY */
@@ -158,7 +166,7 @@ static uint32_t scsi_lun(uint8_t lun, unsigned timeout_ms, const uint8_t *cdb, u
 	uint32_t bit = 1u << last_slot;
 
 	zero((volatile uint8_t *)u, sizeof(*u));
-	zero(ucd, sizeof(ucd));
+	zero(ucd, DATA_OFF);	/* command, response, PRDT; the data area is the caller's */
 	ucd[0] = 0x01;			/* COMMAND UPIU */
 	ucd[1] = len ? 0x40 : 0x00;	/* R: data in */
 	ucd[2] = lun;
@@ -170,8 +178,7 @@ static uint32_t scsi_lun(uint8_t lun, unsigned timeout_ms, const uint8_t *cdb, u
 	for (unsigned i = 0; i < cdb_len; i++)
 		ucd[16 + i] = cdb[i];
 	if (len) {	/* the entry where either reading of the offset looks */
-		prdt_entry(PRDT_FIELD, (uintptr_t)data, len);
-		prdt_entry(PRDT_FIELD * 4, (uintptr_t)data, len);
+		prdt_entry(PRDT_FIELD, (uintptr_t)data, len);	/* bytes: confirmed since X3.1 */
 	}
 
 	u->dw0 = 1u << 28 | (len ? 2u : 0u) << 25 | 1u << 24;	/* UFS storage, dev->host, I */
@@ -225,7 +232,7 @@ static uint32_t read_block(uint32_t lba, uint32_t *ocs, uint32_t *st)
 {
 	uint8_t cdb[10] = { 0x28, 0, lba >> 24, lba >> 16, lba >> 8, lba, 0, 0, 1, 0 };
 
-	zero(data, sizeof(data));
+	zero(data, BLOCK);
 	return scsi(cdb, sizeof(cdb), BLOCK, prdt_len, ocs, st);
 }
 
@@ -335,6 +342,7 @@ static void vs_dump(const char *label)
 
 static int probe(void)
 {
+	data = ucd + DATA_OFF;
 	char b[96], *p;
 	uint32_t ocs = 0, st = 0, rc = 0;
 
@@ -492,9 +500,8 @@ static int probe(void)
 
 	/* anything else the host wrote: skip the command UPIU, the PRDT copies, the response */
 	unsigned other = 0, first_o = 0;
-	for (unsigned i = 32; i < sizeof(ucd); i++) {
+	for (unsigned i = 32; i < DATA_OFF; i++) {	/* not the data area itself */
 		if ((i >= PRDT_FIELD && i < PRDT_FIELD + 128) ||
-		    (i >= PRDT_FIELD * 4 && i < PRDT_FIELD * 4 + 128) ||
 		    (resp_at && i >= resp_at && i < resp_at + 64))
 			continue;
 		if (ucd[i]) {
@@ -583,7 +590,7 @@ void shim_main(uint64_t dtb)
 	if (!xp.fb_ok)
 		xp_reset();
 	con_clear(GREY);
-	con_title("EXYNOS X3.9 RUNS");
+	con_title("EXYNOS X3.10 RUNS");
 	con_str("MODEL", xp.model[0] ? xp.model : "(no DTB)");
 	p = put_hex(put(b, "IMG "), xp.image, 9);
 	put_dec(put(p, " size "), (uint32_t)(xp.image_end - xp.image));
@@ -594,7 +601,7 @@ void shim_main(uint64_t dtb)
 
 	int y = con_row();
 	con_set_row(24);
-	con_title(ok ? "EXYNOS X3.9: OK  " : "EXYNOS X3.9: STOP");
+	con_title(ok ? "EXYNOS X3.10: OK  " : "EXYNOS X3.10: STOP");
 	con_set_row(y);
 	con_skip();
 	int tick_y = con_row();

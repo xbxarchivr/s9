@@ -564,8 +564,24 @@ powering the device down. Diagnostics in the vendor block: VENDOR_SPECIFIC_IS
 +0xC8/+0xD0. HCI_SW_RST is +0x50 (for a full re-init later), and the DMA mask
 is 32 bits.
 - **X3.9** (boot.img sha256 ad84d706..., copy `out/exynos/boot-x3.9.img`,
-  flashed 2026-10-28 with verified readback, result pending): X3.8 + those writes on the running link before taking the
+  flashed 2026-10-28 with verified readback): X3.8 + those writes on the running link before taking the
   request list, dumped before ("VS BEFORE") and after ("VS AFTER"); after the
   4 KB read: IS, vendor IS, SMU abort info, FSM and DMA monitors ("AFTER").
   If data still fails: full re-init (HCI_SW_RST, ufs-cal-9810.c pre/post
   link tables, DME_LINKSTARTUP, NOP OUT, fDeviceInit).
+- **X3.9 result on the G960F (photo):** VS BEFORE (what S-Boot leaves):
+  TXPRDT 0x0C, RXPRDT 0x0C, DATA_REORDER 0xA, BURST 0x18000003 (BURST_LEN(3),
+  no WLU_EN), CLKSTOP 0 (nothing stopped), FORCE_HCS 0xDE0 (= Linux),
+  UFS_ACG 1 (HW ACG off), IOP_ACG 0, NEXUS 0xFFFF / TM 0xF. So the clocks
+  were already on; the guess was wrong. After our writes only TXPRDT
+  0x8000000C and BURST 0x98000003 differ. READ(10) LBA 1 still GOOD with the
+  buffer untouched, IS 0x00020001 (SBFES), vendor IS 0, **SMU_ABORT_MATCH_INFO
+  0 (not the SMU)**, FSM 0, DMA0/DMA1 monitor 0x01010101.
+- **X3.10** (boot.img sha256 f230edaf..., copy `out/exynos/boot-x3.10.img`,
+  not flashed yet): the 4 KB data buffer is the last 8 KB of ucd (ucd+8192,
+  4 KB aligned), memory the host's response DMA demonstrably writes. Data
+  arriving = an address/window problem; SBFES again = the data path itself
+  (then the full host re-init: HCI_SW_RST 0x50, init_host, GPIO_OUT device
+  reset, BROKEN_HCE enable via DME_RESET/ENABLE, init_cfg with UniPro mclk
+  period read back by DME_GET 0x9514 first, DME_LINKSTARTUP, post_init_cfg
+  and hibern8 values, NOP OUT, fDeviceInit).
