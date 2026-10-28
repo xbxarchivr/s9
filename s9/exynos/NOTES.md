@@ -113,9 +113,26 @@ readback.
   like a framebuffer (default used). Reserved nodes are named `name@0xADDR`
   and the base/size column did not match the unit addresses: X1 read them with
   the root's cells; X1.1 uses reserved-memory's own cells.
-- **X1.1** (QEMU ok; boot.img sha256 f34ced00...8f83 flashed 2026-10-28 with verified readback, result pending): PSCI
+- **X1.1** (QEMU ok; boot.img sha256 f34ced00...8f83 flashed 2026-10-28 with verified readback): PSCI
   0.1 function IDs from the DT (`cpu_on`/`cpu_off`) when present; secondaries
   enter through `xentry.S`, which picks the stack from MPIDR because PSCI 0.1
   CPU_ON passes no context id (X1 used x0 for that: garbage on 0.1, a likely
   crash); each core's row is drawn *before* its CPU_ON so a hang names the
   call; one row per core; PSCI node compatible shown.
+- **X1.1 result on the G960F (photo):** ran to the end ("X1.1: OK", timer
+  counting, so it would reset at 90 s). PSCI node: compatible "arm,psci"
+  (0.1), method smc, cpu_on 0xC4000003, cpu_off 0x84000002. CPU0 = MPIDR 000,
+  A55 (MIDR 41?FD051, partly hidden), **16K YES** (MMFR0 0x00?01122), EL1.
+  /cpus MPIDRs 001 002 003 100 101 102 103. **Every CPU_ON returned 0, but no
+  core reported within 1 s ("never arrived")**, so the 16K answer for the M3
+  cores is still open. Reserved-memory sizes still look off (unchanged from X1).
+  Guess (not verified): CPU0 runs with its D-cache on and the new cores with
+  theirs off, so they never saw the CPU table CPU0 wrote (X1.1 looked its own
+  entry up there) and CPU0 never saw what they wrote.
+- **X1.2** (QEMU ok, boot.img sha256 9e4c89d7..., not flashed yet): each new
+  core writes into its own 64-byte-aligned report slot picked by MPIDR (same
+  formula as xentry.S, so it reads nothing CPU0 wrote), cleans it with
+  `dc civac`, and paints a 40 px square in the top-right corner (green = ran,
+  red = took an exception), using constants only. CPU0 invalidates the slot
+  before each read. Rows show SCTLR_EL1 of every core (bit 2 = D-cache on),
+  to test the guess above. The final screen does not clear, so the squares stay.
