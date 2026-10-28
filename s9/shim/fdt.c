@@ -144,3 +144,51 @@ int fdt_chosen_u64(uintptr_t fdt, const char *prop, uint64_t *out)
 		return 0;
 	return 1;
 }
+
+#define FDT_MAX_DEPTH	16
+
+int fdt_walk(uintptr_t fdt, fdt_prop_cb cb, void *ctx)
+{
+	if (!fdt || (fdt & 3) || be32(fdt) != FDT_MAGIC)
+		return 0;
+	uintptr_t p = fdt + be32(fdt + 8);
+	uintptr_t strings = fdt + be32(fdt + 12);
+	uintptr_t names[FDT_MAX_DEPTH + 1];
+	int depth = 0;
+
+	for (;;) {
+		uint32_t tok = be32(p);
+		p += 4;
+		switch (tok) {
+		case FDT_BEGIN_NODE:
+			depth++;
+			if (depth <= FDT_MAX_DEPTH)
+				names[depth] = p;
+			p = align4(skip_str(p));
+			break;
+		case FDT_END_NODE:
+			if (--depth <= 0)
+				return 1;
+			break;
+		case FDT_PROP: {
+			uint32_t l = be32(p), nameoff = be32(p + 4);
+			uintptr_t v = p + 8;
+			if (depth >= 1 && depth <= FDT_MAX_DEPTH)
+				cb(ctx, depth, names, strings + nameoff, v, l);
+			p = align4(v + l);
+			break;
+		}
+		case FDT_NOP:
+			break;
+		default:
+			return 1;
+		}
+	}
+}
+
+uint32_t fdt_totalsize(uintptr_t fdt)
+{
+	if (!fdt || (fdt & 3) || be32(fdt) != FDT_MAGIC)
+		return 0;
+	return be32(fdt + 4);
+}

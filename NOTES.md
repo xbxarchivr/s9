@@ -2,6 +2,9 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> 2026-10-28: Exynos S9 port started <<<
+New target: Galaxy S9 Exynos (SM-G960F/G965F, Exynos 9810). Stage X1 (probe shim: 16K granule on every core incl. Mongoose M3, GIC version, DECON trigger, framebuffer) is in `s9/exynos/`, checked in QEMU only, not run on a phone yet. Read `s9/exynos/NOTES.md`.
+
 ### >>> UPDATE 2026-10-18 (read first, then the 10-17 handoff below) <<<
 
 **STATE at end of 2026-10-18 (evening):**

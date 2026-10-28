@@ -1,5 +1,7 @@
 # iOS no Galaxy S9 (SM-G9600, starqlte, SDM845): notas de trabalho
 
+> Variante Exynos (SM-G960F/G965F): ver `exynos/NOTES.md`.
+
 Referência: ios-sweet (`../ref/sweet/ios-sweet-main`, MIT): XNU + userland do iPhone X 16.7.16 no Redmi Note 10 Pro (SM7150).
 Kernel Samsung/LineageOS 20 do S9: `../ref/kernel/android_kernel_samsung_sdm845-lineage-20`.
 Firmware stock: `../ZTO-G9600ZHU9FVF2` (G9600ZHU9FVF2, Android 10).
