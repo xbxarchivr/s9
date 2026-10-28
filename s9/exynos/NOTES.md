@@ -129,7 +129,7 @@ readback.
   Guess (not verified): CPU0 runs with its D-cache on and the new cores with
   theirs off, so they never saw the CPU table CPU0 wrote (X1.1 looked its own
   entry up there) and CPU0 never saw what they wrote.
-- **X1.2** (QEMU ok, boot.img sha256 9e4c89d7..., not flashed yet): each new
+- **X1.2** (QEMU ok, boot.img sha256 9e4c89d7..., flashed 2026-10-28 with verified readback, result pending): each new
   core writes into its own 64-byte-aligned report slot picked by MPIDR (same
   formula as xentry.S, so it reads nothing CPU0 wrote), cleans it with
   `dc civac`, and paints a 40 px square in the top-right corner (green = ran,
