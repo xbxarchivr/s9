@@ -625,7 +625,7 @@ is 32 bits.
   `kernel.development.sweet` 17265784 bytes, sha256 dea2acb1b54a254b...,
   in `out/exynos/xnu2/`.
 - **X4.3** (boot.img sha256 271a9b48..., copy `out/exynos/boot-x4.3.img`,
-  flashed 2026-10-28 with verified readback, result pending): that kernel + the 1340 MB ADT + sweet-init RAM disk, cmdline
+  flashed 2026-10-28 with verified readback; result: booted to init, see below): that kernel + the 1340 MB ADT + sweet-init RAM disk, cmdline
   `debug=0xc serial=3 cpus=4 keepsyms=1 -v rd=md0 sweettouch=0 sweetusb=0
   sweetbattery=0 sweetcpu=0` (keys on). Expected: same path to "SWEET init:
   still alive"; "SWEET KEYS: Exynos gpa0=... gpa2=..." and a key=N down=1/0
@@ -634,3 +634,31 @@ is 32 bits.
 - Total RAM is ~4015 MB (968 + 512 + 487 + 2048); the 2 GB bank at
   0x880000000 needs multi-range support in the pmap (one span cannot reach it
   without ~30 GB of hole), so it stays unused for now.
+
+- **X4.3 result on the G960F (reported by the user, 2026-10-28):** booted to
+  init ("SWEET init: still alive") with the 1340 MB ADT. Not recorded: whether
+  the key presses logged `SWEET KEYS`, and the exact usable-memory line.
+
+## Handoff: UFS X5 (2026-10-28, end of session)
+
+- Repo note: Windows git rejects `s9/shim/con.c` (CON is a reserved name), which
+  made the index look like 251 deleted files. Fixed locally with
+  `git config core.protectNTFS false` and `git reset` (no files changed). A fresh
+  Windows clone needs the same setting.
+- Not done: X5 (full UFS host re-init) is NOT written. The attempt to create
+  `exynos/x5.c` in this session was blocked by a safety check; nothing was built
+  or flashed. Whoever continues should write it from Samsung's driver
+  (LineageOS android_kernel_samsung_universal9810, lineage-17.1,
+  drivers/scsi/ufs/): ufs-exynos.c (init, host_reset, link_startup_notify),
+  ufs-cal-9810.c (init_cfg / post_init_cfg tables, hibern8 values),
+  ufshcd.c (__ufshcd_hba_enable, ufshcd_link_startup, verify_dev_init NOP OUT,
+  complete_dev_init fDeviceInit). Findings from reading them (observations
+  from the source, not tested on the phone): this driver sets no
+  UFSHCD_QUIRK_USE_OF_HCE, so the controller is enabled through HCE; the
+  device reset is HCI_GPIO_OUT 0 then 1; link-startup result is read from
+  UniPro 0x7854 (GET_GENERRCODE_DIRECT).
+- Untested lead: the UFS protector (ufsp) block at 0x11130000 has UFSPRSECURITY
+  at +0x10 and UFSPWSECURITY at +0x110 with separate AxPROT fields for
+  descriptor, PRDT and data DMA (ufs-exynos.h). A data-only mismatch there would
+  fit X3 (descriptor and response DMA fine, every data transfer SBFES). No stage
+  has read these registers yet; a read-only dump is a cheap next probe.
