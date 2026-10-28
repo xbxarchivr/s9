@@ -645,23 +645,32 @@ is 32 bits.
   made the index look like 251 deleted files. Fixed locally with
   `git config core.protectNTFS false` and `git reset` (no files changed). A fresh
   Windows clone needs the same setting.
-- Not done: X5 (full UFS host re-init) is NOT written. The attempt to create
-  `exynos/x5.c` in this session was blocked by a safety check; nothing was built
-  or flashed. Whoever continues should write it from Samsung's driver
-  (LineageOS android_kernel_samsung_universal9810, lineage-17.1,
-  drivers/scsi/ufs/): ufs-exynos.c (init, host_reset, link_startup_notify),
-  ufs-cal-9810.c (init_cfg / post_init_cfg tables, hibern8 values),
-  ufshcd.c (__ufshcd_hba_enable, ufshcd_link_startup, verify_dev_init NOP OUT,
-  complete_dev_init fDeviceInit). Findings from reading them (observations
-  from the source, not tested on the phone): this driver sets no
-  UFSHCD_QUIRK_USE_OF_HCE, so the controller is enabled through HCE; the
-  device reset is HCI_GPIO_OUT 0 then 1; link-startup result is read from
-  UniPro 0x7854 (GET_GENERRCODE_DIRECT).
-- Untested lead: the UFS protector (ufsp) block at 0x11130000 has UFSPRSECURITY
-  at +0x10 and UFSPWSECURITY at +0x110 with separate AxPROT fields for
-  descriptor, PRDT and data DMA (ufs-exynos.h). A data-only mismatch there would
-  fit X3 (descriptor and response DMA fine, every data transfer SBFES). No stage
-  has read these registers yet; a read-only dump is a cheap next probe.
+- **X5 (full UFS host re-init) written and cross-compiled, NOT flashed.**
+  `exynos/x5.c` (new) + the `x5` case in `exynos/build.sh`.
+  `./exynos/build.sh x5` builds clean: no warnings, no ABS64 relocations, Image
+  131072 bytes, `out/exynos/boot-x5.img` repacked from the stock backup (header
+  v0+dt 1820672, page 2048).
+- What X5 does, in order (from ufs-exynos.c / ufs-cal-9810.c / ufshcd.c,
+  lineage-17.1), after a read-only UFSP protector dump first (the old untested
+  lead, now covered): PHY isolation bypass + io-coherency sysreg;
+  FMPSECURITY + SMU_INIT firmware calls; host SW reset (vendor HCI_SW_RST 0x50
+  = 0x3, poll to 0); init_host vendor registers; device reset_n (GPIO_OUT 0
+  then 1); HCE enable; discover MCLK from PA_DBG_CLK_PERIOD 0x9514 (fallback
+  166.5 MHz); available lanes; apply init_cfg; DME_LINKSTARTUP (result read from
+  UniPro 0x7854); hibern8 calibration + post_init_cfg; point the request lists
+  at ours and run-stop; NOP OUT until NOP IN; SET_FLAG fDeviceInit then poll
+  READ_FLAG until cleared. Then the X3 read probe (TUR/SSU wake-up, one 4 KB
+  READ(10) of LBA 1 into a 0xA5 buffer = the SBFES test, GPT, partitions, BOOT
+  self-check). Every UTRD carries command type 1 (UFS storage, bit 28); SCSI
+  sets the NEXUS bit, dev-mgmt clears it. No SCSI writes anywhere.
+- Decisions recorded while writing (from the source, not tested): no
+  UFSHCD_QUIRK_USE_OF_HCE (controller enabled via HCE); device reset = GPIO_OUT
+  0 then 1; link-startup result from UniPro 0x7854 (GET_GENERRCODE_DIRECT);
+  query response code at resp+6, flag value = bit 0 of BE32 at resp+20..23.
+- Next: flash `out/exynos/boot-x5.img` with `exynos/twrp-boot.sh flash`
+  (verified readback), photograph. The pass criterion is the READ(10) LBA 1
+  buffer going from 0xA5 to "EFI PART" with IS.SBFES gone, then the GPT /
+  partition list / BOOT self-check completing.
 
 - **X4.3 re-flashed** (2026-10-28, after the user could not get it to boot again; boot.img sha256 271a9b48..., readback matched, adb from PowerShell). Result pending.
 
