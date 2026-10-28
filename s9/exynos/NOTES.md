@@ -257,3 +257,30 @@ all squares green. boot.img sha256 5b9c9422..., flashed 2026-10-28 with verified
   (distributor, banked CPU interface, PPI timer, IPIs by interface bit).
 - Next: X3 = read-only UFS probe (Exynos UFS: byte-granular PRDT/offsets,
   vendor regs; controller as S-Boot left it).
+
+## Stage X3: read-only UFS probe (built, NOT run on a phone yet)
+
+Stock DT extracted from `backup/exynos-boot-stock.img` (dt section at
+0x1E64800, "DTBH" v2 container, 6 DTBs rev16/17/18/20/23/26; the phone uses
+rev26). UFS node `ufs@0x11120000`, "samsung,exynos-ufs": reg hci 0x11120000
+(0x200), vendor hci 0x11121100 (0x200), unipro 0x11110000 (0x8000), ufsp/SMU
+0x11130000 (0x100); SPI 0xF2; dma-coherent; ufs-phy 0x11124000, phy-sys PMU
+0x14060724; io-coherency 0x11010700 mask/bits 0x300; ufs-exynos-smu;
+2 lanes, HS gear 3.
+
+`./exynos/build.sh x3` (`exynos/x3.c`, CPU0 only, adapted from
+`shim/ufs.c`). Dumps the UFSHCI + vendor registers S-Boot left, stops unless
+the host is enabled/ready with no pending requests, takes over the transfer
+request list (only rings a doorbell if the host accepted our list), then only
+TEST UNIT READY, READ CAPACITY(10), READ(10) of one 4 KB block at a time.
+Samsung specifics handled empirically and safely: the UTRD response/PRDT
+offset fields are chosen so a byte reading (Linux's PRDT_BYTE_GRAN quirk for
+Exynos) and a dword reading both land inside our 16 KB descriptor buffer,
+with a copy of the PRDT entry at both places; the TUR shows where the
+response UPIU landed (= which granularity); READ CAPACITY tries PRDT length
+16 then 128 bytes (plain vs FMP-extended entry); HCI_UTRL_NEXUS_TYPE bit 0
+set before each doorbell. Then MBR, GPT header, partitions >= 64 MiB plus
+BOOT/RECOVERY, USERDATA/CACHE superblock type, and an end-to-end check: the
+first block of BOOT must be our own boot.img (ANDROID!, kernel_size = shim).
+QEMU: only the "no controller" path (stops at "requests still pending").
+boot.img sha256 b07eda09..., not flashed yet.
