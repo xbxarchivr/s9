@@ -103,11 +103,10 @@
 #define CFG_DESCTYPE_0		0	/* standard 16-byte entries (kernels without FMP) */
 
 /*
- * X5.2: descriptor type 0. X5.1 showed the data-in DMA failing with IS.SBFES
- * while the SMU reports no abort; data (not the response UPIU) goes through
- * the FMP engine, so try it in its non-FMP layout.
+ * Descriptor type 3 (128-byte FMP entries), as TWRP's Linux uses on this
+ * phone (CONFIG_EXYNOS_FMP, PRDT length 0x80 per entry). X5.2/X5.3 tried 0.
  */
-#define DESCTYPE		CFG_DESCTYPE_0
+#define DESCTYPE		CFG_DESCTYPE_3
 #define PRDT_ENTRY_BYTES	(DESCTYPE == CFG_DESCTYPE_3 ? 128u : 16u)
 
 #define BLOCK		4096u
@@ -459,7 +458,12 @@ static uint32_t scsi_lun(uint8_t lun, unsigned timeout_ms, const uint8_t *cdb, u
 	if (len)
 		prdt_entry(PRDT_FIELD, (uintptr_t)data, len);
 
-	u->dw0 = 1u << 28 | (len ? 2u : 0u) << 25 | 1u << 24;
+	/*
+	 * X5.4: command type 0 (SCSI), as TWRP's live UTRDs (0x04000000) and
+	 * S-Boot's (0x01000000) carry; every CT=1 data-in from X3 to X5.3 ended
+	 * in IS.SBFES.
+	 */
+	u->dw0 = (len ? 2u : 0u) << 25 | 1u << 24;
 	u->dw2 = 0x0f;
 	u->ucdba = (uint32_t)(uintptr_t)ucd;
 	u->ucdbau = (uint32_t)((uintptr_t)ucd >> 32);
@@ -1092,7 +1096,7 @@ void shim_main(uint64_t dtb)
 	if (!xp.fb_ok)
 		xp_reset();
 	con_clear(GREY);
-	con_title("EXYNOS X5.3 RUNS");
+	con_title("EXYNOS X5.4 RUNS");
 	con_str("MODEL", xp.model[0] ? xp.model : "(no DTB)");
 	p = put_hex(put(b, "IMG "), xp.image, 9);
 	put_dec(put(p, " size "), (uint32_t)(xp.image_end - xp.image));
@@ -1110,7 +1114,7 @@ void shim_main(uint64_t dtb)
 
 	int y = con_row();
 	con_set_row(24);
-	con_title(ok ? "EXYNOS X5.3: OK  " : "EXYNOS X5.3: STOP");
+	con_title(ok ? "EXYNOS X5.4: OK  " : "EXYNOS X5.4: STOP");
 	con_set_row(y);
 	con_skip();
 	int tick_y = con_row();
