@@ -146,7 +146,7 @@ readback.
   than 1 s, and CPU_OFF from an arrived core may cancel the pending start of
   its cluster-mates (only the first core of each cluster painted).
   CPU0 MIDR reads 410FD051? (photo), MMFR0 0x00101122 (16K yes).
-- **X1.3** (QEMU ok, boot.img sha256 b2b8c596..., not flashed yet): up to 5 s
+- **X1.3** (QEMU ok, boot.img sha256 b2b8c596..., flashed 2026-10-28 with verified readback, result pending): up to 5 s
   per core, arrival time in ms on each row (L = only found in the final look),
   cores park in WFE (no CPU_OFF), every slot read again 2 s after the last
   start, SLOTS row with the raw slot contents (U up, F fault, - empty, ? other).
