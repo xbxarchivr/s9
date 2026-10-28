@@ -28,6 +28,13 @@ own `backup/exynos-boot-stock.img`.
 
 ## Kernel work (patch 0102 and on), in boot order
 
+**Patch 0102 written** (`xnu/patches/0102-exynos9810-gicv2-psci-id-qcom-gates.patch`,
+15 files): items 1-3 and 5 below, plus the early console (0082) moved off the
+hard-coded SDM845 splash 0x9d400000 (inside our Exynos RAM window!) to
+`boot_args->Video.v_baseAddr`, unchanged on the SDM845. Applies cleanly on
+xnu-8796.141.3 + 0001-0101 (0031/0041 need CI's HFS staging, untouched by
+0102). **Not compiled yet**: that needs the macOS CI run.
+
 What breaks first is listed first. Each item names the SDM845 code it
 replaces and the Exynos fact or LineageOS reference it rests on.
 
@@ -81,7 +88,8 @@ replaces and the Exynos fact or LineageOS reference it rests on.
 
 ## First XNU boot (X4) checklist
 
-- [ ] patch 0102 (items 1-5) applied on 0001-0101, CI build green
+- [x] patch 0102 written, applies on 0001-0101
+- [ ] CI build green (push to main runs `.github/workflows/xnu.yml`)
 - [ ] `exynos/mkadt.py out/exynos/exynos.adt`
 - [ ] `tools/mkpayload.py kernel out/exynos/exynos.adt out/exynos/payload.bin
       --cmdline "cpus=1 sweettouch=0 sweetkeys=0 sweetusb=0 sweetbattery=0 sweetcpu=0 -v"`

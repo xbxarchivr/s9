@@ -460,3 +460,12 @@ no UFS node); `repack-boot.py --ramdisk` (tested on the real stock image: dt
 section kept); stage `x4.c` (`build.sh x4` with PAYLOAD=; QEMU: reads the
 initrd from /chosen, refuses a non-payload). Next: kernel patch 0102 (Exynos
 switch for the Qualcomm-only drivers, GICv2, PSCI psci-id), built by CI.
+- **Patch 0102 written (2026-10-28, not compiled):** `sweet_is_exynos()` from
+  the ADT root compatible gates USB, keys, touch, SPMI, MAX77705 battery, OSM
+  clocks, MDSS autorefresh; GICv2 path in pe_fiq.c (GICD/GICC from the ADT
+  reg, per-CPU interface bit from banked ITARGETSR0, PMR 0xF0, GICD_CTLR |= 1)
+  with `sweet_gic_ack/eoi` in sleh_irq and `sweet_gicv2_send_sgi` in
+  SweetCPU::signalCPU; PSCI CPU_ON uses the ADT `psci-id`; start.s skips
+  ICC_SRE_EL2 when ID_AA64PFR0.GIC = 0; the early console takes its
+  framebuffer from boot_args (it was hard-coded to 0x9d400000, which is RAM
+  in the Exynos window). Built locally only as far as `git apply`.

@@ -1,0 +1,629 @@
+diff --git a/bsd/dev/sweet_keys.c b/bsd/dev/sweet_keys.c
+index 36bf024..4f1fece 100644
+--- a/bsd/dev/sweet_keys.c
++++ b/bsd/dev/sweet_keys.c
+@@ -14,6 +14,7 @@
+ #include <pexpert/pexpert.h>
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++extern int sweet_is_exynos(void);
+ extern void sweet_hid_key(int key, int down);
+ extern int sweet_bind_current_thread(int cpu);  /* osfmk/kern/sched_prim.c */
+ extern void thread_set_thread_name(thread_t th, const char *name);     /* osfmk/kern/thread.c */
+@@ -145,6 +146,10 @@ sweet_keys_init(void)
+ 		printf("SWEET KEYS: disabled (sweetkeys=0)\n");
+ 		return;
+ 	}
++	if (sweet_is_exynos()) {	/* PM8998 PON + TLMM: Qualcomm only */
++		printf("SWEET KEYS: Exynos, no key driver yet\n");
++		return;
++	}
+ 	keys_core = ml_io_map(KEYS_CORE_PA, 0x2000);
+ 	keys_cnfg = ml_io_map(KEYS_CNFG_PA, 0x1000);
+ 	keys_obs = ml_io_map(KEYS_OBS_PA, 0x10000);
+diff --git a/bsd/dev/sweet_spmi.c b/bsd/dev/sweet_spmi.c
+index 7182b44..bb3c545 100644
+--- a/bsd/dev/sweet_spmi.c
++++ b/bsd/dev/sweet_spmi.c
+@@ -14,6 +14,7 @@
+ #include "sweet_spmi.h"
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++extern int sweet_is_exynos(void);
+ 
+ #define SP_CORE_PA 0x0c440000u
+ #define SP_OBS_PA  0x0e600000u
+@@ -59,6 +60,9 @@ sweet_spmi_init(void)
+ 		return sp_ready ? 0 : -1;
+ 	}
+ 	sp_attempted = true;
++	if (sweet_is_exynos()) {	/* Qualcomm PMIC arbiter; Exynos has none */
++		return -1;
++	}
+ 	sp_lock = IOLockAlloc();
+ 	if (!sp_lock) {
+ 		return -1;
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 4e086c7..3500b28 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -26,6 +26,7 @@
+ #include <machine/machine_routines.h>
+ #include <pexpert/pexpert.h>
+ #include <sys/sysctl.h>
++extern int sweet_is_exynos(void);
+ #include <libkern/OSAtomic.h>
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+@@ -658,6 +659,10 @@ sweet_touch_init(void)
+ 		printf("SWEET TOUCH: disabled (sweettouch=0)\n");
+ 		return;
+ 	}
++	if (sweet_is_exynos()) {	/* GENI SE + TLMM: Qualcomm only */
++		printf("SWEET TOUCH: Exynos, no touch driver yet\n");
++		return;
++	}
+ 	kern_return_t kr = kernel_thread_start(touch_thread, NULL, &thread);
+ 	if (kr == KERN_SUCCESS) {
+ 		thread_set_thread_name(thread, "sweet.touch");
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+index 24c8f47..c622f78 100644
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -39,6 +39,7 @@
+ #include <sys/sysctl.h>
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++extern int sweet_is_exynos(void);
+ void sweet_usb_probe(void);
+ static void sweet_usb_gadget_start(vm_offset_t dwc);
+ extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
+@@ -627,7 +628,7 @@ sweet_usb_probe(void)
+ 
+ 	/* sweetusb=0 off, 1 (default) report state only, 2 also start the USB device */
+ 	PE_parse_boot_argn("sweetusb", &enabled, sizeof(enabled));
+-	if (!enabled) {
++	if (!enabled || sweet_is_exynos()) {	/* Qualcomm DWC3/QUSB2/GCC */
+ 		return;
+ 	}
+ 	vm_offset_t gcc = ml_io_map(GCC_PA, GCC_SIZE);
+diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
+index 8e4cebc..0712710 100644
+--- a/iokit/Kernel/arm/SweetBattery.cpp
++++ b/iokit/Kernel/arm/SweetBattery.cpp
+@@ -40,6 +40,7 @@
+ #include <libkern/libkern.h>
+ /* bsd/dev/sweet_spmi.c */
+ extern "C" int sweet_spmi_init(void);
++extern "C" int sweet_is_exynos(void);
+ extern "C" int sweet_spmi_read(unsigned sid, unsigned addr, uint8_t *out);
+ /* bsd/dev/sweet_max77705.c, osfmk/kern/sched_prim.c */
+ extern "C" int sweet_max77705_read(uint8_t addr, uint8_t reg, uint8_t *buf, unsigned n);
+@@ -628,6 +629,9 @@ SweetBattery::start(IOService *provider)
+ 	/* Galaxy S9: the MAX77705 gauge unless sweetbattery=0 (static) or 1 (PM6150, the Redmi). */
+ 	int real = 2;
+ 	(void)PE_parse_boot_argn("sweetbattery", &real, sizeof(real));
++	if (sweet_is_exynos()) {
++		real = 0;	/* MAX77705 sits behind Qualcomm TLMM bit-banging here */
++	}
+ 	if (real == 2) {
+ 		uint16_t status;
+ 		fS9 = s9Word(S9_FG_STATUS, &status);
+diff --git a/iokit/Kernel/arm/SweetCPU.cpp b/iokit/Kernel/arm/SweetCPU.cpp
+index 793196f..39edff1 100644
+--- a/iokit/Kernel/arm/SweetCPU.cpp
++++ b/iokit/Kernel/arm/SweetCPU.cpp
+@@ -22,6 +22,9 @@
+ 
+ extern "C" void sweet_secondary_entry(void);
+ extern "C" boolean_t sweet_cpu_signal_is_enabled(unsigned int cpu);
++extern "C" int sweet_gic_is_v2(void);                                     /* pexpert/arm/pe_fiq.c */
++extern "C" void sweet_gicv2_send_sgi(unsigned int logical_cpu, unsigned int sgi);
++extern "C" int sweet_is_exynos(void);
+ 
+ class SweetCPU;
+ static SweetCPU *sweet_cpus[MAX_CPUS];
+@@ -45,6 +48,7 @@ class SweetCPU : public IOCPU {
+ 	OSDeclareDefaultStructors(SweetCPU);
+ 	const OSSymbol *cpuName = NULL;
+ 	uint32_t initialized = 0; /* release/acquire publication after initCPU sends SGI */
++	uint64_t psciTarget = 0;  /* CPU_ON target: ADT psci-id, else the MPIDR affinity */
+ 
+ public:
+ 	static void startAll(void *arg, wait_result_t result);
+@@ -89,6 +93,15 @@ SweetCPU::start(IOService *provider)
+ 		return false;
+ 	}
+ 	setCPUNumber(cpu->cpu_id);
++	/*
++	 * Exynos 9810: PSCI 0.1 CPU_ON wants the DT's logical ids (0..3) while
++	 * MPIDR is 0x81000n00 (X1.4 on the G960F); the ADT carries both.
++	 */
++	psciTarget = cpu->phys_id;
++	OSData *psci = OSDynamicCast(OSData, provider->getProperty("psci-id"));
++	if (psci != NULL && psci->getLength() == sizeof(uint32_t)) {
++		psciTarget = *(const uint32_t *)psci->getBytesNoCopy();
++	}
+ 
+ 	ml_processor_info_t info = {};
+ 	info.cpu_id = reinterpret_cast<cpu_id_t>(this);
+@@ -217,6 +230,10 @@ static void
+ sweet_cpu_clocks(void)
+ {
+ 	uint32_t on = 1, gold_mhz = 2649;
++	if (sweet_is_exynos()) {
++		IOLog("SWEET CPU: Exynos, no Qualcomm OSM: clocks left as S-Boot set them\n");
++		return;
++	}
+ 	for (int i = 0; i < 3; i++) {
+ 		sweet_osm_va[i] = (volatile uint32_t *)ml_io_map(sweet_osm_pa[i], 0x1000);
+ 	}
+@@ -325,6 +342,10 @@ SweetCPU::signalCPU(IOCPU *target)
+ 	if (logical >= topology->num_cpus) {
+ 		panic("SWEET CPU: invalid SGI target %u", logical);
+ 	}
++	if (sweet_gic_is_v2()) {
++		sweet_gicv2_send_sgi(logical, SWEET_IPI_SGI);
++		return;
++	}
+ 	/* Use the TARGET affinity, including Aff1, never the sender's MPIDR. */
+ 	uint64_t mpidr = topology->cpus[logical].phys_id;
+ 	unsigned int aff0 = mpidr & 0xff;
+@@ -353,7 +374,7 @@ SweetCPU::startCPU(vm_offset_t start_paddr, vm_offset_t arg_paddr)
+ 	IOLog("SWEET CPU: cpu=%u CPU_ON target=0x%x entry_pa=0x%llx context=%u\n",
+ 	    getCPUNumber(), cpu->phys_id, (uint64_t)entry, getCPUNumber());
+ 	__builtin_arm_dsb(DSB_SY);
+-	int32_t rc = sweet_psci_cpu_on(cpu->phys_id, entry, getCPUNumber());
++	int32_t rc = sweet_psci_cpu_on(psciTarget, entry, getCPUNumber());
+ 	IOLog("SWEET CPU: cpu=%u PSCI CPU_ON rc=%d\n", getCPUNumber(), rc);
+ 	/* cpu_start() discards PE_cpu_start's return; do not silently carry on. */
+ 	if (rc != 0) {
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 4cba4d5..fb58e1c 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -53,6 +53,7 @@
+ 
+ extern "C" int sweet_console_muted;     /* osfmk/console/serial_console.c */
+ extern "C" vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++extern "C" int sweet_is_exynos(void);
+ extern "C" int sweet_bind_current_thread(int cpu);   /* osfmk/kern/sched_prim.c */
+ extern "C" void thread_set_thread_name(thread_t th, const char *name);  /* osfmk/kern/thread.c */
+ 
+@@ -501,7 +502,7 @@ AppleCLCD::start(IOService *provider)
+ 	}
+ 	uint32_t hz = 10;
+ 	PE_parse_boot_argn("sweetfb_hz", &hz, sizeof(hz));
+-	if (hz >= 60) {
++	if (hz >= 60 && !sweet_is_exynos()) {	/* MDSS pingpong: Qualcomm only */
+ 		s9_panel_autorefresh(1);
+ 	}
+ 	int vsync60 = 0;
+diff --git a/osfmk/arm64/arm_vm_init.c b/osfmk/arm64/arm_vm_init.c
+index be6fa5a..7bcb94e 100644
+--- a/osfmk/arm64/arm_vm_init.c
++++ b/osfmk/arm64/arm_vm_init.c
+@@ -1843,7 +1843,7 @@ sweet_early_map_final(void)
+ 	tt_entry_t *l2 = (tt_entry_t *)phystokv(l1 & ARM_TTE_TABLE_MASK);
+ 	tt_entry_t *slot = &l2[(va & ARM_TT_L2_INDEX_MASK) >> ARM_TT_L2_SHIFT];
+ 	assert(*slot == ARM_TTE_EMPTY);
+-	*slot = 0x9c000000ULL | ARM_TTE_VALID | ARM_TTE_TYPE_BLOCK |
++	*slot = (sweet_early_fb_pa & ~(uint64_t)(ARM_TT_L2_SIZE - 1)) | ARM_TTE_VALID | ARM_TTE_TYPE_BLOCK |
+ 	    ARM_TTE_BLOCK_SH(SH_OUTER_MEMORY) |
+ 	    ARM_TTE_BLOCK_ATTRINDX(CACHE_ATTRINDX_WRITECOMB) |
+ 	    ARM_TTE_BLOCK_AF | ARM_TTE_BLOCK_PNX | ARM_TTE_BLOCK_NX;
+@@ -2190,8 +2190,8 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+ 
+ #if defined(SWEET)
+ 	/* The final TTBR1 is live; leave the outgoing VA=PA framebuffer alias. */
+-	/* Galaxy S9: the splash is 0x1400000 into the mapped 32MB block. */
+-	sweet_early_relocate(SWEET_EARLY_FB_VA + (0x9d400000ULL & (ARM_TT_L2_SIZE - 1)));
++	/* Same offset into the mapped 32MB block (S9 SDM845 splash: 0x1400000). */
++	sweet_early_relocate(SWEET_EARLY_FB_VA + (sweet_early_fb_pa & (ARM_TT_L2_SIZE - 1)));
+ #endif
+ 	set_mmu_ttb(invalid_ttep & TTBR_BADDR_MASK);
+ 
+diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
+index 24f1abc..a8c99d8 100644
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -1861,8 +1861,8 @@ sleh_irq(arm_saved_state_t *state)
+ 	 * sweet: TrustZone owns GIC Group 0, so the timer and IPIs that other
+ 	 * ARM64 targets take as FIQs arrive here as Group 1 IRQs.
+ 	 */
+-	uint64_t iar = __builtin_arm_rsr64("ICC_IAR1_EL1");
+-	uint32_t intid = (uint32_t)(iar & 0xFFFFFF);
++	uint32_t intid;
++	uint64_t iar = sweet_gic_ack(&intid);   /* GICv3 or GICv2 (pe_fiq.c) */
+ 
+ 	if (intid >= 1020 && intid <= 1023) {
+ 		return; /* spurious */
+@@ -1873,11 +1873,11 @@ sleh_irq(arm_saved_state_t *state)
+ 		INTERRUPT_MASKED_DEBUG_START(rtclock_intr, DBG_INTR_TYPE_TIMER);
+ 		rtclock_intr(TRUE);
+ 		INTERRUPT_MASKED_DEBUG_END();
+-		__builtin_arm_wsr64("ICC_EOIR1_EL1", iar);
++		sweet_gic_eoi(iar);
+ 	} else if (intid < 16) {
+ 		sleh_interrupt_handler_prologue(state, DBG_INTR_TYPE_IPI);
+ 		/* Ack before handling so an IPI raised meanwhile is not lost */
+-		__builtin_arm_wsr64("ICC_EOIR1_EL1", iar);
++		sweet_gic_eoi(iar);
+ 		__builtin_arm_isb(ISB_SY);
+ 		cpu_signal_handler();
+ 	} else {
+@@ -1888,7 +1888,7 @@ sleh_irq(arm_saved_state_t *state)
+ 			    cdp->interrupt_nub,
+ 			    intid);
+ 		}
+-		__builtin_arm_wsr64("ICC_EOIR1_EL1", iar);
++		sweet_gic_eoi(iar);
+ 	}
+ 	__builtin_arm_isb(ISB_SY);
+ #else
+diff --git a/osfmk/arm64/start.s b/osfmk/arm64/start.s
+index a6a3a74..d7f9ead 100644
+--- a/osfmk/arm64/start.s
++++ b/osfmk/arm64/start.s
+@@ -306,11 +306,19 @@ LEXT(sweet_secondary_entry)
+ 	mov		x1, #3
+ 	msr		CNTHCTL_EL2, x1
+ 	msr		CNTVOFF_EL2, xzr
+-	/* Permit ICC_SRE_EL1 and GIC CPU interface system-register access. */
++	/*
++	 * Permit ICC_SRE_EL1 and GIC CPU interface system-register access, if
++	 * the core has that interface at all (ID_AA64PFR0_EL1.GIC != 0): the
++	 * Exynos 9810 A55s sit on a GICv2 and would take UNDEFINED here.
++	 */
++	mrs		x1, ID_AA64PFR0_EL1
++	ubfx	x1, x1, #24, #4
++	cbz		x1, 1f
+ 	mrs		x1, ICC_SRE_EL2
+ 	orr		x1, x1, #1
+ 	orr		x1, x1, #8
+ 	msr		ICC_SRE_EL2, x1
++1:
+ 	/* Known Armv8 SCTLR RES1 bits, M/C/I off, little endian. */
+ 	MOV64	x1, 0x30d00800
+ 	msr		SCTLR_EL1, x1
+@@ -514,9 +522,22 @@ LEXT(start_first_cpu)
+ 	mov		x21, #0
+ 
+ #if defined(SWEET)
+-	/* Stage 0: white 64x32 band, no stack or page tables needed. */
+-	/* Galaxy S9: splash at 0x9d400000, 1440x2960, stride 5760. */
+-	MOV64	x0, (0x9d400000 + 2928 * 5760)
++	/*
++	 * Early console framebuffer = boot_args->Video.v_baseAddr (offset 40,
++	 * see shim/loader.c), 0x9d400000 if unset. Stored with the MMU off
++	 * (PC-relative = physical) for sweet_early.c and arm_vm_init.c.
++	 */
++	ldr		x6, [x20, #40]
++	cbnz	x6, 1f
++	MOV64	x6, 0x9d400000
++1:	adrp	x7, EXT(sweet_early_fb_pa)@page
++	add		x7, x7, EXT(sweet_early_fb_pa)@pageoff
++	str		x6, [x7]
++	dc		civac, x7
++	dsb		sy
++	/* Stage 0: white 64x32 band, no stack or page tables needed. 1440x2960, stride 5760. */
++	MOV64	x0, (2928 * 5760)
++	add		x0, x0, x6
+ 	mov		w1, #-1
+ 	mov		x2, #32
+ 	mov		x4, #5760
+@@ -691,7 +712,11 @@ Lkernelcache_base_found:
+ 	 * no-map): that block stays unmapped, sweet_early.c draws only the
+ 	 * rows that fit in this one.
+ 	 */
+-	MOV64	x10, 0x9c000000
++	adrp	x10, EXT(sweet_early_fb_pa)@page
++	add		x10, x10, EXT(sweet_early_fb_pa)@pageoff
++	ldr		x10, [x10]
++	lsr		x10, x10, #(ARM_TT_L2_SHIFT)	/* the 32MB block holding it */
++	lsl		x10, x10, #(ARM_TT_L2_SHIFT)
+ 	MOV64	x11, (ARM_TTE_TYPE_BLOCK | ARM_TTE_VALID | ARM_TTE_BLOCK_SH(SH_OUTER_MEMORY) | ARM_TTE_BLOCK_ATTRINDX(CACHE_ATTRINDX_WRITECOMB) | ARM_TTE_BLOCK_AF | ARM_TTE_BLOCK_PNX | ARM_TTE_BLOCK_NX)
+ 	orr		x11, x11, x10
+ 	and		x12, x10, #(ARM_TT_L2_INDEX_MASK)
+diff --git a/osfmk/arm64/sweet_early.c b/osfmk/arm64/sweet_early.c
+index 0fc4220..8d3bad1 100644
+--- a/osfmk/arm64/sweet_early.c
++++ b/osfmk/arm64/sweet_early.c
+@@ -12,14 +12,19 @@
+ #include <kern/misc_protos.h>
+ 
+ /*
+- * Galaxy S9: splash at 0x9d400000, 1440x2960, stride 5760, 20MB into the
+- * 32MB block start.s/arm_vm_init map. Only rows below the block end
+- * (0x9e000000) are mapped: (0x9e000000 - 0x9d400000) / 5760 = 2184.
++ * The framebuffer iBoot (our shim) passes in boot_args->Video.v_baseAddr:
++ * start.s copies it here before the MMU is on. Galaxy S9 SDM845: splash at
++ * 0x9d400000, 20MB into the 32MB block start.s/arm_vm_init map, so only
++ * (0x9e000000 - 0x9d400000) / 5760 = 2184 rows are mapped. Exynos 9810:
++ * 0xcc000000, block aligned, all 2960 rows. 1440 wide, stride 5760 on both.
+  */
+-static volatile uint32_t *early_fb = (volatile uint32_t *)(uintptr_t)0x9d400000;
++uint64_t sweet_early_fb_pa = 0x9d400000;
++#define EARLY_BLOCK 0x2000000ull	/* 16K-granule L2 block, as start.s maps it */
++static volatile uint32_t *early_fb;
++static unsigned int early_height;
+ #define EARLY_FB early_fb
+ #define EARLY_WIDTH 1440u
+-#define EARLY_HEIGHT 2184u
++#define EARLY_HEIGHT early_height
+ #define EARLY_STRIDE (5760u / 4)
+ #define EARLY_SCALE 2u
+ #define EARLY_CELL_W (8u * EARLY_SCALE)
+@@ -33,6 +38,17 @@ extern unsigned char iso_font[256 * 16];
+ static unsigned int early_row, early_col;
+ static unsigned int early_started, early_disabled, early_panicking;
+ 
++static void
++sweet_early_setup(void)
++{
++	if (early_fb != 0) {
++		return;
++	}
++	uint64_t rows = ((sweet_early_fb_pa | (EARLY_BLOCK - 1)) + 1 - sweet_early_fb_pa) / 5760u;
++	early_height = rows < 2960u ? (unsigned int)rows : 2960u;
++	early_fb = (volatile uint32_t *)(uintptr_t)sweet_early_fb_pa;
++}
++
+ static void
+ sweet_early_clear_row(void)
+ {
+@@ -50,6 +66,7 @@ sweet_early_putc(char c)
+ 	if (early_disabled) {
+ 		return;
+ 	}
++	sweet_early_setup();
+ 	if (!early_started) {
+ 		early_started = 1;
+ 		sweet_early_clear_row();
+@@ -97,6 +114,7 @@ sweet_early_mark(unsigned int stage, const char *label)
+ 	if (early_disabled || stage > 20) {
+ 		return;
+ 	}
++	sweet_early_setup();
+ 	uint32_t color = 0xff00ff00u | ((stage & 7u) * 32u << 16);
+ 	for (unsigned int y = EARLY_HEIGHT - 32; y < EARLY_HEIGHT; y++) {
+ 		for (unsigned int x = stage * 48; x < (stage + 1) * 48; x++) {
+@@ -134,6 +152,7 @@ void
+ sweet_early_relocate(uint64_t base)
+ {
+ 	sweet_early_mark(8, "leaving bootstrap TTBR0");
++	sweet_early_setup();
+ 	early_fb = (volatile uint32_t *)(uintptr_t)base;
+ 	__asm__ volatile("dsb sy" ::: "memory");
+ 	sweet_early_mark(9, "kernel framebuffer VA live");
+diff --git a/osfmk/arm64/sweet_early.h b/osfmk/arm64/sweet_early.h
+index d7a25f2..35f661f 100644
+--- a/osfmk/arm64/sweet_early.h
++++ b/osfmk/arm64/sweet_early.h
+@@ -7,6 +7,8 @@
+ #include <stdint.h>
+ 
+ #if defined(SWEET)
++/* PA of the framebuffer the early console draws on; start.s sets it from boot_args */
++extern uint64_t sweet_early_fb_pa;
+ void sweet_early_mark(unsigned int stage, const char *label);
+ void sweet_early_putc(char c);
+ void sweet_early_panic(const char *fmt, va_list *args);
+diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
+index 6089db9..57606f8 100644
+--- a/pexpert/arm/pe_fiq.c
++++ b/pexpert/arm/pe_fiq.c
+@@ -11,6 +11,9 @@
+ #include <machine/machine_routines.h>
+ #include <pexpert/device_tree.h>
+ #include <pexpert/arm64/board_config.h>
++#if defined(SWEET)
++#include <pexpert/arm/protos.h>
++#endif
+ 
+ 
+ #if HAS_GIC_V3
+@@ -26,6 +29,56 @@ static vm_offset_t gicd_base;
+ static vm_offset_t gicr_base;
+ static vm_offset_t gicr_size;
+ 
++#if defined(SWEET)
++static int sweet_gicv2;                 /* set on the boot CPU, before any IRQ */
++static vm_offset_t gicc_base;
++static volatile uint8_t sweet_gicv2_cpu_if[SWEET_SMP_MAX_CPUS];
++static int sweet_exynos = -1;           /* -1: not looked up yet */
++
++static int
++sweet_dt_has_string(DTEntry entry, const char *prop_name, const char *want)
++{
++	void const *prop;
++	unsigned int size;
++	if (SecureDTGetProperty(entry, prop_name, &prop, &size) != kSuccess) {
++		return 0;
++	}
++	/* NUL-separated list; compare by hand (no libc in pexpert here) */
++	const char *p = (const char *)prop, *end = p + size;
++	while (p < end) {
++		const char *w = want;
++		while (p < end && *p != 0 && *p == *w) {
++			p++, w++;
++		}
++		if (p < end && *p == 0 && *w == 0) {
++			return 1;
++		}
++		while (p < end && *p != 0) {
++			p++;
++		}
++		p++;
++	}
++	return 0;
++}
++
++int
++sweet_is_exynos(void)
++{
++	if (sweet_exynos < 0) {
++		DTEntry root;
++		sweet_exynos = SecureDTLookupEntry(NULL, "/", &root) == kSuccess &&
++		    sweet_dt_has_string(root, "compatible", "samsung,exynos9810");
++	}
++	return sweet_exynos;
++}
++
++int
++sweet_gic_is_v2(void)
++{
++	return sweet_gicv2;
++}
++#endif /* SWEET */
++
+ static uint32_t
+ _gic_read32(vm_offset_t addr)
+ {
+@@ -117,6 +170,9 @@ pe_init_fiq()
+ 			sweet_vtimer_intid = intid;
+ 		}
+ 		kprintf("SWEET GIC: virtual timer INTID %u\n", sweet_vtimer_intid);
++		sweet_gicv2 = sweet_dt_has_string(entry, "compatible", "arm,gic-400");
++		(void)sweet_is_exynos();
++		kprintf("SWEET GIC: %s, exynos %d\n", sweet_gicv2 ? "GICv2 (GIC-400)" : "GICv3", sweet_exynos);
+ #endif
+ 
+ 		vm_offset_t soc_base_phys = pe_arm_get_soc_base_phys();
+@@ -141,7 +197,41 @@ pe_init_fiq()
+ 		}
+ 
+ 		gicr_size = gicr_size_prop;
++#if defined(SWEET)
++		if (sweet_gicv2) {
++			gicc_base = gicr_base;  /* reg[2..3] is the CPU interface */
++		}
++#endif
++	}
++
++#if defined(SWEET)
++	if (sweet_gicv2) {
++		/*
++		 * Per CPU: the banked GICD registers and GICC. What shim stage X2
++		 * did on the G960F (29 vtimer IRQs in 300 ms, SGIs self and cross
++		 * on every A55). S-Boot leaves GICD_CTLR at 0.
++		 */
++		uint32_t phys_id = __builtin_arm_rsr64("MPIDR_EL1") & (MPIDR_AFF1_MASK | MPIDR_AFF0_MASK);
++		unsigned int cpu = (unsigned int)ml_get_cpu_number(phys_id);
++		if (cpu < SWEET_SMP_MAX_CPUS) {
++			sweet_gicv2_cpu_if[cpu] = (uint8_t)(gicd_read32(GICV2_GICD_ITARGETSR) & 0xFF);
++		}
++		for (unsigned int i = 0; i < 32; i += 4) {
++			gicd_write32(GICV2_GICD_IPRIORITYR + i, 0xA0A0A0A0);
++		}
++		gicd_write32(GICV2_GICD_ISENABLER0, (1U << sweet_vtimer_intid) | (1U << SWEET_IPI_SGI));
++		_gic_write32(gicc_base + GICV2_GICC_PMR, 0xF0);
++		_gic_write32(gicc_base + GICV2_GICC_BPR, 0);
++		_gic_write32(gicc_base + GICV2_GICC_CTLR,
++		    _gic_read32(gicc_base + GICV2_GICC_CTLR) | GICV2_CTLR_ENABLEGRP1);
++		gicd_write32(GICD_CTLR, gicd_read32(GICD_CTLR) | GICV2_CTLR_ENABLEGRP1);
++		__builtin_arm_dsb(DSB_SY);
++		__builtin_arm_isb(ISB_SY);
++		kprintf("SWEET GIC: cpu %u interface 0x%02x\n", cpu,
++		    cpu < SWEET_SMP_MAX_CPUS ? sweet_gicv2_cpu_if[cpu] : 0);
++		return;
+ 	}
++#endif /* SWEET */
+ 
+ 	// Find the redistributor for this processor
+ 	vm_offset_t gicr_pe_base = find_gicr_pe_base();
+@@ -222,6 +312,49 @@ pe_init_fiq()
+ 	__builtin_arm_isb(ISB_SY);
+ #endif /* SWEET */
+ }
++
++#if defined(SWEET)
++uint64_t
++sweet_gic_ack(uint32_t *intid)
++{
++	if (sweet_gicv2) {
++		uint32_t iar = _gic_read32(gicc_base + GICV2_GICC_IAR);
++		*intid = iar & GICV2_INTID_MASK;
++		return iar;
++	}
++	uint64_t iar = __builtin_arm_rsr64("ICC_IAR1_EL1");
++	*intid = (uint32_t)(iar & 0xFFFFFF);
++	return iar;
++}
++
++void
++sweet_gic_eoi(uint64_t iar)
++{
++	if (sweet_gicv2) {
++		/* the whole IAR value: for SGIs it carries the source CPU */
++		_gic_write32(gicc_base + GICV2_GICC_EOIR, (uint32_t)iar);
++		return;
++	}
++	__builtin_arm_wsr64("ICC_EOIR1_EL1", iar);
++}
++
++void
++sweet_gicv2_send_sgi(unsigned int logical_cpu, unsigned int sgi)
++{
++	/*
++	 * GICv2 targets CPU interfaces, not MPIDRs. Each CPU records its own
++	 * interface bit in pe_init_fiq; before that, assume interface n is
++	 * CPU n (X2 on the G960F: 0x01/0x02/0x04/0x08 for CPU0-3).
++	 */
++	uint32_t target = logical_cpu < SWEET_SMP_MAX_CPUS ? sweet_gicv2_cpu_if[logical_cpu] : 0;
++	if (target == 0) {
++		target = 1U << (logical_cpu & 7);
++	}
++	__builtin_arm_dsb(DSB_ISHST);
++	gicd_write32(GICV2_GICD_SGIR, (target << 16) | (sgi & 0xF));
++	__builtin_arm_isb(ISB_SY);
++}
++#endif /* SWEET */
+ #else
+ void
+ pe_init_fiq()
+diff --git a/pexpert/pexpert/arm/protos.h b/pexpert/pexpert/arm/protos.h
+index 9004f2b..5f96a8f 100644
+--- a/pexpert/pexpert/arm/protos.h
++++ b/pexpert/pexpert/arm/protos.h
+@@ -38,6 +38,13 @@ int uart_getc(void);
+ void pe_init_fiq(void);
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ extern uint32_t sweet_vtimer_intid;
++/* GICv3 (SDM845/SM7150) or GICv2 (Exynos 9810), chosen from the ADT */
++uint64_t sweet_gic_ack(uint32_t *intid);
++void sweet_gic_eoi(uint64_t iar);
++int sweet_gic_is_v2(void);
++void sweet_gicv2_send_sgi(unsigned int logical_cpu, unsigned int sgi);
++/* ADT root compatible has "samsung,exynos9810": Qualcomm-only drivers stay off */
++int sweet_is_exynos(void);
+ #endif
+ 
+ #ifdef PRIVATE
+diff --git a/pexpert/pexpert/arm64/SWEET.h b/pexpert/pexpert/arm64/SWEET.h
+index b99c2f4..4cd1012 100644
+--- a/pexpert/pexpert/arm64/SWEET.h
++++ b/pexpert/pexpert/arm64/SWEET.h
+@@ -80,4 +80,22 @@
+ #define ICC_SRE_SRE                             0x1
+ /* End of GICv3 register definitions */
+ 
++/*
++ * GICv2 (GIC-400) for the Galaxy S9 Exynos 9810, picked at boot by the ADT
++ * /arm-io/gic compatible "arm,gic-400"; its reg is then GICD, GICC.
++ * See Arm IHI 0048B. The A55s there have no GICv3 system registers
++ * (ID_AA64PFR0_EL1.GIC = 0): no ICC_* access on that path.
++ */
++#define GICV2_GICD_ISENABLER0                   0x100
++#define GICV2_GICD_IPRIORITYR                   0x400
++#define GICV2_GICD_ITARGETSR                    0x800
++#define GICV2_GICD_SGIR                         0xF00
++#define GICV2_GICC_CTLR                         0x00
++#define GICV2_GICC_PMR                          0x04
++#define GICV2_GICC_BPR                          0x08
++#define GICV2_GICC_IAR                          0x0C
++#define GICV2_GICC_EOIR                         0x10
++#define GICV2_CTLR_ENABLEGRP1                   0x1     /* NS view of GICD_CTLR/GICC_CTLR */
++#define GICV2_INTID_MASK                        0x3FF
++
+ #endif /* ! _PEXPERT_ARM64_SWEET_H */
