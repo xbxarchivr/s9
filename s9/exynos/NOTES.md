@@ -675,3 +675,5 @@ is 32 bits.
 - **X4.3 re-flashed** (2026-10-28, after the user could not get it to boot again; boot.img sha256 271a9b48..., readback matched, adb from PowerShell). Result pending.
 
 - **Keys did not react on X4.3 (user, 2026-10-28): cause found.** sweet_keys_init() and sweet_touch_init() are only called at the end of a successful attach in bsd/dev/sweet_ufs.c (0060/0072); the Exynos ADT has no /sweet-ufs node, so sweet_ufs_init returns ENXIO early and the 0103 GPIO polling never starts. **0105-exynos9810-start-input-without-ufs** calls both from that early exit too (both are idempotent; touch returns early on Exynos). Patch made on a Windows-side tree (scratchpad xnuw, xnu-8796.141.3 + 0001-0104), applies cleanly. Not built yet.
+
+- **X5 flashed** (2026-10-28, boot.img `out/exynos/boot-x5.img` sha256 c4ca330b..., TWRP dd to BOOT sda10 from PowerShell, readback matched, phone rebooted into it). Result pending: pass = READ(10) LBA 1 buffer 0xA5 -> "EFI PART", IS.SBFES gone, GPT/partition list/BOOT self-check printed.
