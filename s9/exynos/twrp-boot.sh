@@ -8,6 +8,8 @@
 # the Snapdragon S9 (starqlte) has its own scripts in tools/.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# Git Bash on Windows would rewrite the phone's /dev and /tmp paths into C:/...
+export MSYS_NO_PATHCONV=1
 cmd=${1:-}
 adb wait-for-recovery
 
@@ -17,7 +19,7 @@ case "$dev" in
 starlte|star2lte) ;;
 *) echo "device '$dev' (hardware '$hw') is not starlte/star2lte: stopping" >&2; exit 1 ;;
 esac
-boot=$(adb shell 'for p in /dev/block/by-name/boot /dev/block/platform/*/by-name/boot /dev/block/platform/*/by-name/BOOT /dev/block/platform/*/*/by-name/boot; do [ -e $p ] && echo $p && break; done' | tr -d '\r')
+boot=$(adb shell 'for p in /dev/block/by-name/BOOT /dev/block/by-name/boot /dev/block/platform/*/by-name/boot /dev/block/platform/*/by-name/BOOT /dev/block/platform/*/*/by-name/boot; do [ -e $p ] && echo $p && break; done' | tr -d '\r')
 [ -n "$boot" ] || { echo "boot partition not found" >&2; exit 1; }
 part=$(adb shell "blockdev --getsize64 $boot" | tr -d '\r')
 echo "$dev ($hw): boot = $boot, $part bytes"
