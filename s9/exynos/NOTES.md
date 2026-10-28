@@ -386,7 +386,7 @@ the UFS Device W-LUN with **power condition 3 (power down)**: S-Boot powers
 the device down right before jumping to the kernel (hence our 2/04/02). The
 UCD is reused for every command, so no data-command descriptor is left.
 Our probe: same as X3.5 (READ 1 GOOD, buffer untouched, IS 0x00020001 SBFES).
-- **X3.7** (boot.img sha256 145adcff..., not flashed yet): additionally dumps
+- **X3.7** (boot.img sha256 145adcff..., flashed 2026-10-28 with verified readback, result pending): additionally dumps
   S-Boot's UCD from +0x800 (+0x800..0x83F, +0x880, +0x890, +0x900, +0x980),
   where the PRDT of its last data read (loading us) probably still lies;
   4 KB entries with addresses 0x1000 apart would show the stride and layout.
