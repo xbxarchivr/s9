@@ -620,3 +620,17 @@ is 32 bits.
   0xE0000000-0xE3700000 in /chosen/sweet-ram-holes: **1340 MB** usable
   (`--small` = the old 472 MB window). The bank gaps are inside the
   physmap; if that faults, the next step is a span that stops at 0xBC800000.
+- **Kernel with 0103 + 0104 built** (xbxarchivr/s9 run 40725524440, success;
+  only style warnings in sweet_keys.c of the kinds the S9 code already has),
+  `kernel.development.sweet` 17265784 bytes, sha256 dea2acb1b54a254b...,
+  in `out/exynos/xnu2/`.
+- **X4.3** (boot.img sha256 271a9b48..., copy `out/exynos/boot-x4.3.img`, not
+  flashed yet): that kernel + the 1340 MB ADT + sweet-init RAM disk, cmdline
+  `debug=0xc serial=3 cpus=4 keepsyms=1 -v rd=md0 sweettouch=0 sweetusb=0
+  sweetbattery=0 sweetcpu=0` (keys on). Expected: same path to "SWEET init:
+  still alive"; "SWEET KEYS: Exynos gpa0=... gpa2=..." and a key=N down=1/0
+  line per press; more memory in the VM/zone lines. A panic early in VM init
+  would point at the bank gaps in the physmap.
+- Total RAM is ~4015 MB (968 + 512 + 487 + 2048); the 2 GB bank at
+  0x880000000 needs multi-range support in the pmap (one span cannot reach it
+  without ~30 GB of hole), so it stays unused for now.
