@@ -527,8 +527,8 @@ Mach-O (`out/exynos/init/sweet-init`); mockfs serves the RAM disk itself as
 /sbin/launchd. Payload `out/exynos/payload-rd.bin` (16667664 bytes): RAM disk
 at 0x944d0000 (0x8000), cmdline `debug=0xc serial=3 cpus=4 keepsyms=1 -v
 rd=md0 sweettouch=0 sweetkeys=0 sweetusb=0 sweetbattery=0 sweetcpu=0`.
-X4.2 boot.img sha256 6b001223... (copy `out/exynos/boot-x4.2.img`), not
-flashed yet. Expected: "BSD root: md0", "load_init_program: attempting to
+X4.2 boot.img sha256 6b001223... (copy `out/exynos/boot-x4.2.img`), flashed
+2026-10-28 with verified readback, result pending. Expected: "BSD root: md0", "load_init_program: attempting to
 load /sbin/launchd", "*** SWEET userspace: init running as PID 1 ***", then
 "SWEET init: still alive" every 5 s.
 Step 2 (a real iOS root) needs storage: the iOS 16 root is GBs, the RAM
