@@ -225,8 +225,8 @@ static inline void hci_wr(uint32_t o, uint32_t v) { wr32(UFS_HCI + o, v); }
 
 struct utrd {
 	uint32_t dw0, dw1, dw2, dw3, ucdba, ucdbau;
-	uint32_t resp;		/* [31:16] response length, [15:0] offset */
-	uint32_t prdt;		/* [31:16] PRDT length, [15:0] offset */
+	uint32_t resp;		/* [31:16] response offset, [15:0] length */
+	uint32_t prdt;		/* [31:16] PRDT offset, [15:0] length */
 };
 
 static volatile struct utrd utrl[32] __attribute__((aligned(4096)));
@@ -469,7 +469,12 @@ static uint32_t scsi_lun(uint8_t lun, unsigned timeout_ms, const uint8_t *cdb, u
 	u->ucdba = (uint32_t)(uintptr_t)ucd;
 	u->ucdbau = (uint32_t)((uintptr_t)ucd >> 32);
 	u->resp = RESP_FIELD << 16 | RESP_FIELD;
-	u->prdt = (len ? prdt_field_len : 0) << 16 | PRDT_FIELD;
+	/*
+	 * X5.6: offset in [31:16], length in [15:0] (UFSHCI; TWRP's live UTRD
+	 * 0x08000080). X3..X5.5 had them swapped: the host read its PRDT from
+	 * ucd+0x80 (zeros) and DMA'd the data to address 0 -> IS.SBFES.
+	 */
+	u->prdt = PRDT_FIELD << 16 | (len ? prdt_field_len : 0);
 	dsb();
 
 	hci_wr(REG_IS, hci(REG_IS));
@@ -1103,7 +1108,7 @@ void shim_main(uint64_t dtb)
 	if (!xp.fb_ok)
 		xp_reset();
 	con_clear(GREY);
-	con_title("EXYNOS X5.5 RUNS");
+	con_title("EXYNOS X5.6 RUNS");
 	con_str("MODEL", xp.model[0] ? xp.model : "(no DTB)");
 	p = put_hex(put(b, "IMG "), xp.image, 9);
 	put_dec(put(p, " size "), (uint32_t)(xp.image_end - xp.image));
@@ -1121,7 +1126,7 @@ void shim_main(uint64_t dtb)
 
 	int y = con_row();
 	con_set_row(24);
-	con_title(ok ? "EXYNOS X5.5: OK  " : "EXYNOS X5.5: STOP");
+	con_title(ok ? "EXYNOS X5.6: OK  " : "EXYNOS X5.6: STOP");
 	con_set_row(y);
 	con_skip();
 	int tick_y = con_row();
