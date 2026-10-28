@@ -312,7 +312,7 @@ cleared the slot with the standard "write 0" while Exynos clears on a 1
 (UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR), so slot 0 stayed busy.
 Guess (not verified): the PRDT entry is Samsung's 128-byte FMP-extended
 entry, so a length of 16 bytes = 0 entries and the host waits forever.
-- **X3.2** (boot.img sha256 669a721c..., not flashed yet): OCS 7 with a
+- **X3.2** (boot.img sha256 669a721c..., flashed 2026-10-28 with verified readback, result pending): OCS 7 with a
   response counts as the SCSI status; TUR repeated until GOOD, first sense
   key/ASC/ASCQ shown; after a timeout UTRLCLR gets both ~bit and bit, and a
   slot that stays busy is abandoned for the next (16 slots); IS shown on
