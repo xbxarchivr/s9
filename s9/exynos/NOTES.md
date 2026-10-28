@@ -578,7 +578,7 @@ is 32 bits.
   buffer untouched, IS 0x00020001 (SBFES), vendor IS 0, **SMU_ABORT_MATCH_INFO
   0 (not the SMU)**, FSM 0, DMA0/DMA1 monitor 0x01010101.
 - **X3.10** (boot.img sha256 f230edaf..., copy `out/exynos/boot-x3.10.img`,
-  not flashed yet): the 4 KB data buffer is the last 8 KB of ucd (ucd+8192,
+  flashed 2026-10-28 with verified readback, result pending): the 4 KB data buffer is the last 8 KB of ucd (ucd+8192,
   4 KB aligned), memory the host's response DMA demonstrably writes. Data
   arriving = an address/window problem; SBFES again = the data path itself
   (then the full host re-init: HCI_SW_RST 0x50, init_host, GPIO_OUT device
