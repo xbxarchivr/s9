@@ -1,5 +1,5 @@
 /*
- * Galaxy S9 Exynos milestone X3 (rev 1.7): read-only probe of the internal UFS that
+ * Galaxy S9 Exynos milestone X3 (rev 1.8): read-only probe of the internal UFS that
  * S-Boot loaded us from. CPU0 only. Adapted from shim/ufs.c (SDM845 M3).
  *
  * Stock DT (rev26, from the boot.img dt section): ufs@0x11120000
@@ -50,8 +50,16 @@
 #define HCS_UCRDY	(1u << 3)
 
 #define BLOCK		4096u
-#define RESP_FIELD	512u	/* bytes -> 512, dwords -> 2048 */
-#define PRDT_FIELD	1024u	/* bytes -> 1024, dwords -> 4096 */
+/* Samsung's UCD (ufshci.h): command UPIU 1024 B, response 1024 B, then PRDT */
+#define RESP_FIELD	1024u	/* bytes -> 1024, dwords -> 4096 */
+#define PRDT_FIELD	2048u	/* bytes -> 2048, dwords -> 8192 */
+
+/* include/linux/smc.h, include/crypto/smu.h of the universal9810 kernel */
+#define SMC_CMD_FMP_SECURITY	0xc2001810UL
+#define SMC_CMD_SMU		0xc2001850UL
+#define SMU_EMBEDDED		0
+#define SMU_INIT		0
+#define CFG_DESCTYPE_3		3	/* 128-byte FMP PRDT entries */
 #define RUN_SECONDS	60
 
 #define wsr(r, v) __asm__ volatile("msr " r ", %0" : : "r"((uint64_t)(v)))
@@ -292,68 +300,6 @@ static void list_partitions(uint32_t entry_lba, uint32_t nent, uint32_t *boot_lb
 	}
 }
 
-static int in_ram(uint64_t a)
-{
-	return (a >= 0x80000000UL && a < 0x100000000UL) ||
-	       (a >= 0x880000000UL && a < 0x900000000UL);
-}
-
-/*
- * X3.5 on the G960F: our data-in read ended in IS.SBFES (system bus fatal
- * error) with our buffer untouched, so the host likely reads our PRDT entry
- * in another layout and DMAs to a bogus address. S-Boot's own request list
- * is still in RAM: show the UTRD fields and PRDT entries Samsung's code wrote
- * when it loaded us. Reads RAM only, before we touch the host.
- */
-static void dump_sboot(void)
-{
-	uint64_t base = (uint64_t)hci(REG_UTRLBAU) << 32 | hci(REG_UTRLBA);
-	char b[96], *p;
-	int shown = 0;
-
-	if (!in_ram(base)) {
-		con_str("S-BOOT", "list not in RAM");
-		return;
-	}
-	for (int i = 0; i < 16 && shown < 2; i++) {
-		uintptr_t d = base + i * 32;
-		uint64_t ucdp = (uint64_t)rd32(d + 20) << 32 | rd32(d + 16);
-		uint32_t rf = rd32(d + 24), pf = rd32(d + 28);
-		if (!ucdp || !in_ram(ucdp))
-			continue;
-		shown++;
-		p = put_dec(put(b, "slot "), i);
-		p = put_hex(put(p, " dw0 "), rd32(d), 8);
-		p = put_hex(put(p, " ocs "), rd32(d + 8) & 0xff, 2);
-		put_hex(put(p, " ucd "), ucdp, 9);
-		con_str(shown == 1 ? "S-BOOT" : "", b);
-		p = put_hex(put(b, "resp "), rf, 8);
-		p = put_hex(put(p, " prdt "), pf, 8);
-		p = put_hex(put(p, " op "), rd8(ucdp + 16), 2);
-		put_hex(put(p, " len "), __builtin_bswap32(rd32(ucdp + 12)), 8);
-		con_str("", b);
-		/*
-		 * X3.6: S-Boot's last command is a no-data START STOP UNIT (W-LUN
-		 * 0xD0, power condition 3 = power down), response at 1024 (1024
-		 * bytes), so its UCD starts with that command. The PRDT of its
-		 * last data read probably still sits after the response: dump
-		 * from 2048, rows placed to show a 16- or a 128-byte stride.
-		 */
-		static const uint16_t rows[8] = { 0x800, 0x810, 0x820, 0x830, 0x880, 0x890, 0x900, 0x980 };
-		for (int r = 0; r < 8; r++) {
-			uintptr_t e = ucdp + rows[r];
-			if (!in_ram(e))
-				break;
-			p = put_hex(put(b, "+"), rows[r], 3);
-			for (int k = 0; k < 4; k++)
-				p = put_hex(put(p, " "), rd32(e + k * 4), 8);
-			con_str("", b);
-		}
-	}
-	if (!shown)
-		con_str("S-BOOT", "no used slot in its list");
-}
-
 static int probe(void)
 {
 	char b[96], *p;
@@ -393,7 +339,18 @@ static int probe(void)
 		return 0;
 	}
 
-	dump_sboot();
+	/*
+	 * What Samsung's driver does before any I/O, at probe and on every
+	 * resume ("FMPSECURITY & SMU" in ufs-exynos.c, smu_dev.c): tell the
+	 * secure firmware the PRDT descriptor type, then initialise the SMU on
+	 * the UFS data path. X3.5: without them every data-in DMA ended in
+	 * IS.SBFES. Runtime state only; S-Boot and the kernel redo it each boot.
+	 */
+	uint64_t r_sec = xp_psci(SMC_CMD_FMP_SECURITY, 0, SMU_EMBEDDED, CFG_DESCTYPE_3);
+	uint64_t r_smu = xp_psci(SMC_CMD_SMU, SMU_INIT, SMU_EMBEDDED, 0);
+	p = put_hex(put(b, "FMPSECURITY desc 3 -> "), r_sec, 8);
+	put_hex(put(p, "  SMU_INIT -> "), r_smu, 8);
+	con_str("FIRMWARE", b);
 
 	/* Take over the transfer request list: stop, point at ours, run. */
 	hci_wr(REG_UTRLRSR, 0);
@@ -567,7 +524,7 @@ void shim_main(uint64_t dtb)
 	if (!xp.fb_ok)
 		xp_reset();
 	con_clear(GREY);
-	con_title("EXYNOS X3.7 RUNS");
+	con_title("EXYNOS X3.8 RUNS");
 	con_str("MODEL", xp.model[0] ? xp.model : "(no DTB)");
 	p = put_hex(put(b, "IMG "), xp.image, 9);
 	put_dec(put(p, " size "), (uint32_t)(xp.image_end - xp.image));
@@ -578,7 +535,7 @@ void shim_main(uint64_t dtb)
 
 	int y = con_row();
 	con_set_row(24);
-	con_title(ok ? "EXYNOS X3.7: OK  " : "EXYNOS X3.7: STOP");
+	con_title(ok ? "EXYNOS X3.8: OK  " : "EXYNOS X3.8: STOP");
 	con_set_row(y);
 	con_skip();
 	int tick_y = con_row();

@@ -404,3 +404,38 @@ buffer**, after which the host must be reset. Next: read Samsung's vendor
 UFS driver for this SoC (LineageOS android_kernel_samsung_universal9810:
 drivers/scsi/ufs/ufs-exynos.c, FMP/SMU code) for the exact PRDT entry layout
 and what is set up before the first data transfer, instead of more guesses.
+
+### Samsung's UFS driver for this SoC (read 2026-10-28)
+
+Source: LineageOS android_kernel_samsung_universal9810, branch lineage-17.1
+(https://github.com/LineageOS/android_kernel_samsung_universal9810/tree/lineage-17.1):
+`drivers/scsi/ufs/{ufs-exynos.c,ufs-exynos-smu.c,ufshcd.c,ufshci.h}`,
+`drivers/crypto/fmp/smu_dev.c`, `include/linux/smc.h`, `include/crypto/{fmp,smu}.h`.
+- `ufshci.h`: with CONFIG_EXYNOS_FMP, struct ufshcd_sg_entry is des0..des31 =
+  **128 bytes** (base_addr, upper_addr, reserved, size, then file IV/keys,
+  tweak keys, disk IV, reserved). UCD = command UPIU 1024 B + response UPIU
+  1024 B (ALIGNED_UPIU_SIZE) + PRDT, i.e. **response at 1024, PRDT at 2048**.
+- `ufshcd.c` ufshcd_map_sg: PRDT_BYTE_GRAN -> prd_table_length =
+  segments * sizeof(entry) (bytes); size = dma_len - 1; reserved = 0; then
+  the crypto engine config per entry. `include/crypto/fmp.h`: des3 bits 28-29
+  FAS, 30-31 DAS, 26/27 key lengths; bypass = all zero (as our entries).
+- `ufs-exynos.c` init (and again on resume): "FMPSECURITY & SMU":
+  `exynos_ufs_smu_sec_cfg()` then `exynos_ufs_smu_init()`, which
+  (`smu_dev.c`) are the secure-firmware calls
+  **`exynos_smc(SMC_CMD_FMP_SECURITY 0xC2001810, 0, SMU_EMBEDDED 0,
+  CFG_DESCTYPE_3 3)`** and **`exynos_smc(SMC_CMD_SMU 0xC2001850, SMU_INIT 0,
+  SMU_EMBEDDED 0, 0)`**. There is also an SMU_ABORT (command 2). Neither is
+  persistent: S-Boot and the kernel set them up on every boot/resume.
+- io-coherency sysreg bits are set only for a dma-coherent setup (not needed
+  with the MMU off).
+Inference (not verified): after S-Boot hands over, the FMP/SMU state does not
+allow normal-world data DMA until the OS makes those two calls; that would
+give exactly IS.SBFES on data while descriptor/response DMA works.
+- **X3.8** (boot.img sha256 1e673b9b..., not flashed yet): makes the two
+  calls Samsung's driver makes before any I/O, FMP_SECURITY(0, SMU_EMBEDDED,
+  CFG_DESCTYPE_3) and SMU(SMU_INIT, SMU_EMBEDDED), and shows their return
+  values (0 = success); UCD layout now Samsung's (response at 1024, PRDT at
+  2048; the dword readings 4096/8192 still land inside our 16 KB buffer).
+  Then the X3.5 probe: wake-up, one 4 KB READ(10) of LBA 1 into a 0xA5
+  buffer, and on "EFI PART" the GPT, partitions and BOOT self-check. S-Boot
+  descriptor dump removed (findings above).
