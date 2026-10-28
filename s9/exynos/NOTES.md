@@ -86,5 +86,14 @@ readback.
 
 ## Handoff
 
-- 2026-10-28: X1 written and checked in QEMU only. Nothing has run on an Exynos
-  phone yet; the next action is the procedure above, starting with the backup.
+- 2026-10-28: X1 written and checked in QEMU only.
+- 2026-10-28 (phone): SM-G960F starlte, bootloader G960FXXUHFVG4, TWRP 3.7.0_9-0.
+  TWRP names partitions in upper case: BOOT = sda10 (57671680 bytes), RECOVERY
+  sda11, DTB sda8, DTBO sda9, USERDATA sda25. Stock boot backed up:
+  `backup/exynos-boot-stock.img`, sha256 665c0087...8c4f. Its header: page 2048,
+  raw (uncompressed) Image 30961672 bytes, kernel_addr 0x10008000, ramdisk 901991,
+  no second, **Samsung dt_size = 1820672 in the header_version slot** (the DT
+  lives inside boot.img even though a DTB partition exists), cmdline
+  `androidboot.selinux=permissive`. X1 boot.img sha256 793e44d2...2591 flashed
+  with TWRP dd, readback matched, phone rebooted into it. **Result: waiting for
+  the user's photo / observation.**
