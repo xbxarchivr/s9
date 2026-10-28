@@ -1,5 +1,5 @@
 /*
- * Galaxy S9 Exynos milestone X3 (rev 1.4): read-only probe of the internal UFS that
+ * Galaxy S9 Exynos milestone X3 (rev 1.5): read-only probe of the internal UFS that
  * S-Boot loaded us from. CPU0 only. Adapted from shim/ufs.c (SDM845 M3).
  *
  * Stock DT (rev26, from the boot.img dt section): ufs@0x11120000
@@ -382,48 +382,60 @@ static int probe(void)
 		return 0;
 
 	/*
-	 * READ CAPACITY(10), 8 bytes. PRDT length: 1 entry (standard), or in
-	 * bytes: 128 (Samsung FMP-extended entry, as Linux's exynos FMP code
-	 * sizes them) / 16 (plain entry). X3.3 on the G960F: 16 completed GOOD
-	 * with no data (likely 0 entries, data dropped), and 128 right after it
-	 * came back with no status and no response; so 128 goes first now.
+	 * X3.3/X3.4 on the G960F: whatever the PRDT length, the first command
+	 * with a data phase completes GOOD with residual 0 but leaves our buffer
+	 * untouched, and no later command gets a status written back. Commands
+	 * without data work, response DMA into our memory included. So this run
+	 * spends its one data command on a full 4 KB READ(10) of LBA 1 (the
+	 * size of one PRDT segment, PRDT_SET_SIZE(12)), into a buffer filled
+	 * with 0xA5 so "DMA wrote zeros" and "DMA wrote nothing" differ, and
+	 * then looks for the data anywhere else in the descriptor buffer.
 	 */
-	static const uint8_t cap10[10] = { 0x25 };
-	static const uint32_t tries_b[2] = { 128, 16 };
-	int ntries = dword_gran ? 1 : 2, have_cap = 0;
-	for (int i = 0; i < ntries && !have_cap; i++) {
-		prdt_len = dword_gran ? 1 : tries_b[i];
-		zero(data, 8);
-		rc = scsi(cap10, sizeof(cap10), 8, prdt_len, &ocs, &st);
-		p = put_rc(b, rc, ocs, st);
-		p = put_dec(put(p, " prdt "), prdt_len);
-		p = put_dec(put(p, " slot "), last_slot);
-		p = put_dec(put(p, " res "), resid);
-		p = put_hex(put(p, " last "), be32(data), 8);
-		put_dec(put(p, " blk "), be32(data + 4));
-		con_str(i ? "" : "CAPACITY", b);
-		have_cap = !rc && be32(data + 4) == BLOCK;
-	}
-	if (have_cap) {
-		p = put_dec(b, (uint32_t)(((uint64_t)be32(data) + 1) >> 8));
-		put(p, " MiB on LUN 0");
-		con_str("", b);
-	} else {
-		/* maybe only this command is odd: try the GPT header with each length */
-		int found = 0;
-		for (int i = 0; i < ntries && !found; i++) {
-			prdt_len = dword_gran ? 1 : tries_b[i];
-			rc = read_block(1, &ocs, &st);
-			found = !rc && data[0] == 'E' && data[1] == 'F' && data[2] == 'I' && data[3] == ' ';
-			p = put_rc(b, rc, ocs, st);
-			p = put_dec(put(p, " prdt "), prdt_len);
-			p = put_hex(put(p, " first "), be32(data), 8);
-			put(p, found ? " EFI PART" : "");
-			con_str(i ? "" : "GPT TRY", b);
+	prdt_len = dword_gran ? 1 : 128;
+	for (unsigned i = 0; i < BLOCK; i++)
+		data[i] = 0xa5;
+	static const uint8_t rd_lba1[10] = { 0x28, 0, 0, 0, 0, 1, 0, 0, 1, 0 };
+	rc = scsi(rd_lba1, sizeof(rd_lba1), BLOCK, prdt_len, &ocs, &st);
+	unsigned changed = 0, first_ch = BLOCK;
+	for (unsigned i = 0; i < BLOCK; i++)
+		if (data[i] != 0xa5) {
+			changed++;
+			if (first_ch == BLOCK)
+				first_ch = i;
 		}
-		if (!found)
-			return 0;
+	p = put_rc(b, rc, ocs, st);
+	p = put_dec(put(p, " prdt "), prdt_len);
+	p = put_dec(put(p, " slot "), last_slot);
+	put_dec(put(p, " res "), resid);
+	con_str("READ 1", b);
+	p = put_dec(put(b, "changed "), changed);
+	p = put_dec(put(p, " from "), first_ch);
+	p = put_hex(put(p, " bytes "), be32(data), 8);
+	put_hex(put(p, " "), be32(data + 4), 8);
+	con_str("BUFFER", b);
+
+	/* anything else the host wrote: skip the command UPIU, the PRDT copies, the response */
+	unsigned other = 0, first_o = 0;
+	for (unsigned i = 32; i < sizeof(ucd); i++) {
+		if ((i >= PRDT_FIELD && i < PRDT_FIELD + 128) ||
+		    (i >= PRDT_FIELD * 4 && i < PRDT_FIELD * 4 + 128) ||
+		    (resp_at && i >= resp_at && i < resp_at + 64))
+			continue;
+		if (ucd[i]) {
+			if (!other)
+				first_o = i;
+			other++;
+		}
 	}
+	p = put_dec(put(b, "other nonzero bytes "), other);
+	put_dec(put(p, " from "), first_o);
+	con_str("UCD", b);
+	p = put_hex(put(b, "+38 "), rd32(UFS_VS + 0x38), 8);
+	p = put_hex(put(p, " +c0 "), rd32(UFS_VS + 0xc0), 8);
+	put_hex(put(p, " is "), hci(REG_IS), 8);
+	con_str("VENDOR", b);
+	if (rc || !(data[0] == 'E' && data[1] == 'F' && data[2] == 'I' && data[3] == ' '))
+		return 0;
 
 	/* LBA 0: protective MBR; LBA 1: GPT header. */
 	rc = read_block(0, &ocs, &st);
@@ -491,7 +503,7 @@ void shim_main(uint64_t dtb)
 	if (!xp.fb_ok)
 		xp_reset();
 	con_clear(GREY);
-	con_title("EXYNOS X3.4 RUNS");
+	con_title("EXYNOS X3.5 RUNS");
 	con_str("MODEL", xp.model[0] ? xp.model : "(no DTB)");
 	p = put_hex(put(b, "IMG "), xp.image, 9);
 	put_dec(put(p, " size "), (uint32_t)(xp.image_end - xp.image));
@@ -502,7 +514,7 @@ void shim_main(uint64_t dtb)
 
 	int y = con_row();
 	con_set_row(24);
-	con_title(ok ? "EXYNOS X3.4: OK  " : "EXYNOS X3.4: STOP");
+	con_title(ok ? "EXYNOS X3.5: OK  " : "EXYNOS X3.5: STOP");
 	con_set_row(y);
 	con_skip();
 	int tick_y = con_row();
