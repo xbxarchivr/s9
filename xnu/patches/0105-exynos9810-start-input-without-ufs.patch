@@ -1,0 +1,18 @@
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index 328f786..c7fff13 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -597,6 +597,13 @@ sweet_ufs_init(void)
+ 	    SecureDTGetProperty(node, "reg", (void const **)&reg, &size) != kSuccess ||
+ 	    size < 2 * sizeof(uintptr_t)) {
+ 		printf("SWEET UFS: no /sweet-ufs node in the device tree\n");
++		/*
++		 * The input drivers are started at the end of a successful UFS
++		 * attach below. Galaxy S9 Exynos has no UFS node (yet), so start
++		 * them here too: otherwise the keys never poll.
++		 */
++		sweet_keys_init();
++		sweet_touch_init();
+ 		return ENXIO;
+ 	}
+ 	PE_parse_boot_argn("ufsroot", want, sizeof(want));
