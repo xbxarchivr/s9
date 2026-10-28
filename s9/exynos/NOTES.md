@@ -662,3 +662,5 @@ is 32 bits.
   descriptor, PRDT and data DMA (ufs-exynos.h). A data-only mismatch there would
   fit X3 (descriptor and response DMA fine, every data transfer SBFES). No stage
   has read these registers yet; a read-only dump is a cheap next probe.
+
+- **X4.3 re-flashed** (2026-10-28, after the user could not get it to boot again; boot.img sha256 271a9b48..., readback matched, adb from PowerShell). Result pending.
