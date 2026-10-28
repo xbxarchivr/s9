@@ -1,0 +1,62 @@
+diff --git a/osfmk/arm/pmap/pmap.c b/osfmk/arm/pmap/pmap.c
+index dc5f1b1..7464cc0 100644
+--- a/osfmk/arm/pmap/pmap.c
++++ b/osfmk/arm/pmap/pmap.c
+@@ -2584,6 +2584,39 @@ static const struct { pmap_paddr_t start, end; } sweet_ram_holes[] = {
+ };
+ #define SWEET_RAM_NHOLES (sizeof(sweet_ram_holes) / sizeof(sweet_ram_holes[0]))
+ 
++/*
++ * Galaxy S9 Exynos 9810: the DRAM span crosses bank gaps and Samsung
++ * carve-outs that differ from the SDM845 ones, so the board's list comes
++ * from the ADT: /chosen/sweet-ram-holes = pairs of u64 <start end>
++ * (exynos/mkadt.py). Without that property the SDM845 list above applies.
++ */
++#define SWEET_ADT_MAX_HOLES 16
++static struct { pmap_paddr_t start, end; } sweet_adt_holes[SWEET_ADT_MAX_HOLES];
++static unsigned int sweet_adt_nholes;
++static int sweet_adt_holes_state = -1;  /* -1 not read, 0 absent, 1 from the ADT */
++
++static void
++sweet_read_adt_holes(void)
++{
++	DTEntry chosen;
++	void const *prop;
++	unsigned int size;
++
++	sweet_adt_holes_state = 0;
++	if (SecureDTLookupEntry(NULL, "/chosen", &chosen) != kSuccess ||
++	    SecureDTGetProperty(chosen, "sweet-ram-holes", &prop, &size) != kSuccess ||
++	    size == 0 || (size % (2 * sizeof(uint64_t))) != 0) {
++		return;
++	}
++	const uint64_t *v = (const uint64_t *)prop;
++	for (unsigned int i = 0; i < size / (2 * sizeof(uint64_t)) && i < SWEET_ADT_MAX_HOLES; i++) {
++		sweet_adt_holes[i].start = v[2 * i];
++		sweet_adt_holes[i].end = v[2 * i + 1];
++		sweet_adt_nholes = i + 1;
++	}
++	sweet_adt_holes_state = 1;
++}
++
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+ 
+ 
+@@ -2601,6 +2634,17 @@ pmap_is_bad_ram(__unused ppnum_t ppn)
+ 	 * for allocation -- their vm_page stays in the (contiguous) array but is
+ 	 * never released to the free list. Called from pmap_startup. */
+ 	pmap_paddr_t pa = ptoa_64(ppn);
++	if (sweet_adt_holes_state < 0) {
++		sweet_read_adt_holes();
++	}
++	if (sweet_adt_holes_state > 0) {
++		for (unsigned i = 0; i < sweet_adt_nholes; i++) {
++			if (pa >= sweet_adt_holes[i].start && pa < sweet_adt_holes[i].end) {
++				return true;
++			}
++		}
++		return false;
++	}
+ 	for (unsigned i = 0; i < SWEET_RAM_NHOLES; i++) {
+ 		if (pa >= sweet_ram_holes[i].start && pa < sweet_ram_holes[i].end) {
+ 			return true;

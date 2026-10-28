@@ -1,0 +1,89 @@
+diff --git a/bsd/dev/sweet_keys.c b/bsd/dev/sweet_keys.c
+index 4f1fece..af56288 100644
+--- a/bsd/dev/sweet_keys.c
++++ b/bsd/dev/sweet_keys.c
+@@ -34,6 +34,48 @@ static uint32_t keys_version, keys_last_status;
+ static bool keys_started;
+ static int keys_sleep_chan;
+ 
++/*
++ * Galaxy S9 Exynos 9810 (SM-G960F): the four keys are plain GPIO inputs in
++ * the always-on pin controller (stock DT gpio_keys, rev26), active low.
++ * Bank offsets from pinctrl-exynos.c (exynos9810_pin_banks0) of the
++ * universal9810 kernel: gpa0 at +0x020, gpa2 at +0x060, DAT at bank +0x04.
++ *   KEY_VOLUMEUP gpa0-3, KEY_VOLUMEDOWN gpa0-4, KEY_WINK (Bixby) gpa0-6,
++ *   KEY_POWER gpa2-4.
++ * Read-only: the pin configuration stays as S-Boot set it.
++ */
++#define EXY_ALIVE_PA     0x14050000u
++#define EXY_GPA0_DAT     0x024u
++#define EXY_GPA2_DAT     0x064u
++
++static vm_offset_t exy_alive;
++
++static void keys_wait(void);
++
++static void
++exy_keys_thread(void *arg, wait_result_t result)
++{
++	/* sweet_hid_key: 0 power, 1 volume up, 2 volume down, 3 menu (Bixby) */
++	int state[4] = {0, 0, 0, 0};
++	(void)arg;
++	(void)result;
++	printf("SWEET KEYS: Exynos GPIO polling on cpu %d\n", sweet_bind_current_thread(0));
++	for (;;) {
++		uint32_t a0 = *(volatile uint32_t *)(exy_alive + EXY_GPA0_DAT);
++		uint32_t a2 = *(volatile uint32_t *)(exy_alive + EXY_GPA2_DAT);
++		int now[4] = {!(a2 & (1u << 4)), !(a0 & (1u << 3)), !(a0 & (1u << 4)), !(a0 & (1u << 6))};
++		for (int k = 0; k < 4; ++k) {
++			if (now[k] != state[k]) {
++				state[k] = now[k];
++				printf("SWEET KEYS: key=%d down=%d gpa0=%#x gpa2=%#x\n", k, state[k], a0, a2);
++				sweet_hid_key(k, state[k]);
++			}
++		}
++		keys_wait();
++	}
++}
++
++static void exy_keys_start(void);
++
+ static uint32_t
+ keys_rd(vm_offset_t base, uint32_t off)
+ {
+@@ -146,8 +188,8 @@ sweet_keys_init(void)
+ 		printf("SWEET KEYS: disabled (sweetkeys=0)\n");
+ 		return;
+ 	}
+-	if (sweet_is_exynos()) {	/* PM8998 PON + TLMM: Qualcomm only */
+-		printf("SWEET KEYS: Exynos, no key driver yet\n");
++	if (sweet_is_exynos()) {	/* PM8998 PON + TLMM are Qualcomm: GPIO keys instead */
++		exy_keys_start();
+ 		return;
+ 	}
+ 	keys_core = ml_io_map(KEYS_CORE_PA, 0x2000);
+@@ -194,4 +236,24 @@ sweet_keys_init(void)
+ 		printf("SWEET KEYS: kernel_thread_start failed %d\n", kr);
+ 	}
+ }
++static void
++exy_keys_start(void)
++{
++	thread_t thread;
++	exy_alive = ml_io_map(EXY_ALIVE_PA, 0x1000);
++	if (!exy_alive) {
++		printf("SWEET KEYS: Exynos pinctrl mapping failed\n");
++		return;
++	}
++	printf("SWEET KEYS: Exynos gpa0=%#x gpa2=%#x (keys are active low)\n",
++	    *(volatile uint32_t *)(exy_alive + EXY_GPA0_DAT),
++	    *(volatile uint32_t *)(exy_alive + EXY_GPA2_DAT));
++	kern_return_t kr = kernel_thread_start(exy_keys_thread, NULL, &thread);
++	if (kr == KERN_SUCCESS) {
++		thread_set_thread_name(thread, "sweet.keys");
++		thread_deallocate(thread);
++	} else {
++		printf("SWEET KEYS: kernel_thread_start failed %d\n", kr);
++	}
++}
+ #endif /* ARM64_BOARD_CONFIG_SWEET */

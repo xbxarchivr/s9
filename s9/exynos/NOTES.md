@@ -590,3 +590,24 @@ is 32 bits.
   (SBFES), vendor IS 0, SMU abort 0, DMA monitors 0x01010101. So it is NOT the
   address: the host's data-in path is broken in the state S-Boot hands over,
   while command/response DMA works. Next: full host re-init (list above).
+
+## More RAM and the first Exynos driver (2026-10-28, patches written, not built)
+
+- **Keys (0103-exynos9810-gpio-keys):** stock rev26 DT gpio_keys: KEY_WINK
+  (Bixby) gpa0-6, KEY_VOLUMEDOWN gpa0-4, KEY_VOLUMEUP gpa0-3, KEY_POWER
+  gpa2-4, flags 0x0f (active low). Banks in pinctrl@14050000 (alive);
+  offsets from the universal9810 kernel's pinctrl-exynos.c
+  (exynos9810_pin_banks0): gpa0 +0x020, gpa2 +0x060; DAT at bank +0x04 ->
+  **gpa0 DAT 0x14050024, gpa2 DAT 0x14050064**, pressed = bit 0. On Exynos
+  sweet_keys.c maps the alive block and polls both every 20 ms (read only),
+  reporting power, volume up, volume down, Bixby = Menu to sweet_hid_key, and
+  logs every change with the raw values.
+- **RAM (0104-exynos9810-ram-holes-from-adt):** pmap_is_bad_ram (0091) takes
+  its holes from ADT /chosen/sweet-ram-holes (u64 <start end> pairs, up to
+  16) when present, else 0091's SDM845 list. Plan: span 0x92000000-0xF0000000
+  (bank 2 from 0xF0000000 up is modem/audio/debug carve-outs) with holes for
+  removed-dma-pool 0xAF800000 (32M), 0xB8000000 (2M), the bank-0/bank-1 gap +
+  seclog 0xC0000000 (512K), fb 0xCC000000, the bank-1/bank-2 gap +
+  secure_camera 0xE1900000 (30M): about 1.3 GB instead of 472 MB. Needs the
+  exact bank ends (live /proc/iomem or /sys/firmware/fdt in TWRP) before
+  mkadt.py gets them: the physmap also maps the holes.
