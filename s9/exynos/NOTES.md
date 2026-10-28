@@ -294,7 +294,7 @@ RXPRDT 0x0C (= PRDT_SET_SIZE(12): 4 KB per PRDT entry, as assumed), NEXUS
 0x300 clear: UFS DMA not coherent; irrelevant with the MMU off). HCE reading 0
 on a running host = Linux's UFSHCI_QUIRK_BROKEN_HCE for Exynos; X3 gated on
 it and stopped.
-- **X3.1** (boot.img sha256 00be2332..., not flashed yet): same probe, gate
+- **X3.1** (boot.img sha256 00be2332..., flashed 2026-10-28 with verified readback, result pending): same probe, gate
   without HCE (DP + UTRLRDY + UCRDY + no pending requests).
 - M3 power research (separate session): `exynos/M3-POWER.md`, proposes an
   X1.6 experiment (six PMU writes from Samsung's pmucal_lpm_init before
