@@ -342,7 +342,7 @@ DBR cleared but OCS still our preset 0x0F and no response UPIU.
 Guess (not verified): the PRDT entry is the 128-byte FMP-extended one, so 16
 bytes = 0 entries (data dropped, GOOD anyway), and that left the DMA side in a
 bad state for the next command.
-- **X3.4** (boot.img sha256 d51926a3..., not flashed yet): PRDT length 128
+- **X3.4** (boot.img sha256 d51926a3..., flashed 2026-10-28 with verified readback, result pending): PRDT length 128
   first, then 16; a fresh request slot per command (skipping busy ones);
   CAPACITY rows show slot and residual count; IS shown on OCS errors; if
   CAPACITY fails both ways, READ(10) of LBA 1 is tried with each length and
