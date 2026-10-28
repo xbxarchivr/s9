@@ -611,3 +611,12 @@ is 32 bits.
   secure_camera 0xE1900000 (30M): about 1.3 GB instead of 472 MB. Needs the
   exact bank ends (live /proc/iomem or /sys/firmware/fdt in TWRP) before
   mkadt.py gets them: the physmap also maps the holes.
+- **Live RAM map (TWRP, /proc/device-tree memory nodes + /proc/iomem):**
+  0x80000000+0x3C800000 (to 0xBC800000), 0xC0000000+0x20000000 (to
+  0xE0000000), 0xE1900000+0x1E700000 (to 4G; System RAM to 0xFF7FFFFF),
+  0x880000000+0x80000000. mkadt.py now: span 0x92000000-0xF0000000
+  (dram-size 0x5DF00000, panic log 0xEFF00000), holes 0xAF800000-0xB1800000,
+  0xB8000000-0xB8200000, 0xBC800000-0xC0080000, 0xCC000000-0xCD100000,
+  0xE0000000-0xE3700000 in /chosen/sweet-ram-holes: **1340 MB** usable
+  (`--small` = the old 472 MB window). The bank gaps are inside the
+  physmap; if that faults, the next step is a span that stops at 0xBC800000.
