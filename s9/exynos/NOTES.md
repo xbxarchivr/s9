@@ -294,8 +294,26 @@ RXPRDT 0x0C (= PRDT_SET_SIZE(12): 4 KB per PRDT entry, as assumed), NEXUS
 0x300 clear: UFS DMA not coherent; irrelevant with the MMU off). HCE reading 0
 on a running host = Linux's UFSHCI_QUIRK_BROKEN_HCE for Exynos; X3 gated on
 it and stopped.
-- **X3.1** (boot.img sha256 00be2332..., flashed 2026-10-28 with verified readback, result pending): same probe, gate
+- **X3.1** (boot.img sha256 00be2332..., flashed 2026-10-28 with verified readback): same probe, gate
   without HCE (DP + UTRLRDY + UCRDY + no pending requests).
 - M3 power research (separate session): `exynos/M3-POWER.md`, proposes an
   X1.6 experiment (six PMU writes from Samsung's pmucal_lpm_init before
   CPU_ON). Not reviewed or tried yet.
+
+**X3.1 result on the G960F (photo): first command answered, data command hung.**
+Shim at 0x80098000; our list 0x8009E000, ucd 0x800A1000 (accepted: the host
+switched to our list). **TUR: response UPIU at 512 = offsets in BYTES**
+(PRDT_BYTE_GRAN confirmed), OCS 0x07, SCSI status 0x02 CHECK CONDITION (the
+usual first-command unit attention; X3.1 did not retry). OCS 7 + response =
+Linux's UFSHCD_QUIRK_BROKEN_OCS_FATAL_ERROR (Exynos reports FATAL for any
+non-GOOD status). **READ CAPACITY(10) with PRDT length 16: timeout** (the
+ocs/st printed were stale from TUR). The retry with 128 meant nothing: X3.1
+cleared the slot with the standard "write 0" while Exynos clears on a 1
+(UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR), so slot 0 stayed busy.
+Guess (not verified): the PRDT entry is Samsung's 128-byte FMP-extended
+entry, so a length of 16 bytes = 0 entries and the host waits forever.
+- **X3.2** (boot.img sha256 669a721c..., not flashed yet): OCS 7 with a
+  response counts as the SCSI status; TUR repeated until GOOD, first sense
+  key/ASC/ASCQ shown; after a timeout UTRLCLR gets both ~bit and bit, and a
+  slot that stays busy is abandoned for the next (16 slots); IS shown on
+  timeouts; slot shown on the CAPACITY rows.

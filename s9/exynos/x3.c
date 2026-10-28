@@ -1,5 +1,5 @@
 /*
- * Galaxy S9 Exynos milestone X3 (rev 1.1): read-only probe of the internal UFS that
+ * Galaxy S9 Exynos milestone X3 (rev 1.2): read-only probe of the internal UFS that
  * S-Boot loaded us from. CPU0 only. Adapted from shim/ufs.c (SDM845 M3).
  *
  * Stock DT (rev26, from the boot.img dt section): ufs@0x11120000
@@ -74,6 +74,9 @@ static volatile int in_exc;
 static int dword_gran = -1;	/* 0: offsets in bytes (Exynos quirk), 1: standard */
 static uint32_t prdt_len;	/* value of the PRDT length field that moves data */
 static uint32_t resp_at;	/* where the response UPIU landed */
+static int slot;		/* request slot in use; moves on if one gets stuck */
+static uint32_t last_is;	/* REG_IS after the last command */
+static uint8_t sense[3];	/* key, ASC, ASCQ of the last CHECK CONDITION */
 
 static void zero(volatile uint8_t *p, unsigned n)
 {
@@ -104,14 +107,26 @@ static void prdt_entry(uint32_t off, uintptr_t buf, uint32_t len)
 }
 
 /*
- * One SCSI command in slot 0. 0 = good status; else 1 timeout, 2 OCS error,
- * 3 no response UPIU found, 4 SCSI status not GOOD.
+ * One SCSI command. 0 = good status; else 1 timeout, 2 OCS error, 3 no
+ * response UPIU found, 4 SCSI status not GOOD, 5 no free slot.
+ *
+ * X3.1 on the G960F: TUR came back with OCS 7 (FATAL) and a response UPIU
+ * with CHECK CONDITION. Linux's UFSHCD_QUIRK_BROKEN_OCS_FATAL_ERROR for
+ * Exynos: OCS 7 with a non-zero response/status in the UPIU is just how
+ * this host reports a non-GOOD status. And UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR:
+ * Exynos clears a slot on a 1 in UTRLCLR (standard: a 0). After a timeout
+ * both forms are written (each leaves the other slots alone or clears empty
+ * ones); a slot that stays busy is abandoned for the next one.
  */
 static uint32_t scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, uint32_t prdt_field_len,
 		     uint32_t *ocs, uint32_t *st)
 {
 	static uint8_t tag;
-	volatile struct utrd *u = &utrl[0];
+
+	if (slot >= 16)
+		return 5;
+	volatile struct utrd *u = &utrl[slot];
+	uint32_t bit = 1u << slot;
 
 	zero((volatile uint8_t *)u, sizeof(*u));
 	zero(ucd, sizeof(ucd));
@@ -138,19 +153,33 @@ static uint32_t scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, uint32_
 	u->prdt = (len ? prdt_field_len : 0) << 16 | PRDT_FIELD;
 	dsb();
 
-	wr32(UFS_VS + VS_NEXUS, rd32(UFS_VS + VS_NEXUS) | 1);	/* slot 0: SCSI command */
-	hci_wr(REG_UTRLDBR, 1);
+	wr32(UFS_VS + VS_NEXUS, rd32(UFS_VS + VS_NEXUS) | bit);	/* SCSI command */
+	hci_wr(REG_UTRLDBR, bit);
 	uint64_t end = xp_now() + xp.cntfrq;	/* 1 s */
-	while (hci(REG_UTRLDBR) & 1)
+	while (hci(REG_UTRLDBR) & bit)
 		if (xp_now() > end) {
-			hci_wr(REG_UTRLCLR, ~1u);	/* write 0 to clear slot 0 */
+			last_is = hci(REG_IS);
+			hci_wr(REG_UTRLCLR, ~bit);	/* standard: 0 clears */
+			hci_wr(REG_UTRLCLR, bit);	/* Exynos: 1 clears */
+			xp_delay_ms(10);
+			if (hci(REG_UTRLDBR) & bit)
+				slot++;
+			*ocs = u->dw2 & 0xff;
+			*st = 0xff;
 			return 1;
 		}
 	dsb();
+	last_is = hci(REG_IS);
 	*ocs = u->dw2 & 0xff;
 	resp_at = ucd[RESP_FIELD] == 0x21 ? RESP_FIELD : ucd[RESP_FIELD * 4] == 0x21 ? RESP_FIELD * 4 : 0;
 	*st = resp_at ? ucd[resp_at + 7] : 0xff;
-	if (*ocs)
+	if (resp_at && *st == 2) {	/* fixed-format sense after the 2-byte length */
+		sense[0] = ucd[resp_at + 32 + 2 + 2] & 0xf;
+		sense[1] = ucd[resp_at + 32 + 2 + 12];
+		sense[2] = ucd[resp_at + 32 + 2 + 13];
+	}
+	int ocs_quirk = *ocs == 7 && resp_at && (ucd[resp_at + 6] || *st);
+	if (*ocs && !ocs_quirk)
 		return 2;
 	if (!resp_at)
 		return 3;
@@ -169,7 +198,10 @@ static char *put_rc(char *p, uint32_t rc, uint32_t ocs, uint32_t st)
 {
 	p = put_dec(put(p, "rc "), rc);
 	p = put_hex(put(p, " ocs "), ocs, 2);
-	return put_hex(put(p, " st "), st, 2);
+	p = put_hex(put(p, " st "), st, 2);
+	if (rc == 1)
+		p = put_hex(put(p, " is "), last_is, 8);
+	return p;
 }
 
 static int name_is(const char *n, const char *want)
@@ -293,9 +325,19 @@ static int probe(void)
 
 	/* TEST UNIT READY: no data, so only the response offset matters. */
 	static const uint8_t tur[6] = { 0x00 };
-	for (int i = 0; i < 3; i++) {
+	int first_st = -1;
+	for (int i = 0; i < 4; i++) {	/* a unit attention clears on the next one */
 		rc = scsi(tur, sizeof(tur), 0, 0, &ocs, &st);
-		if (resp_at)
+		if (first_st < 0 && resp_at) {
+			first_st = st;
+			if (st == 2) {
+				p = put_hex(put(b, "first: CHECK CONDITION sense "), sense[0], 1);
+				p = put_hex(put(p, "/"), sense[1], 2);
+				put_hex(put(p, "/"), sense[2], 2);
+				con_str("TUR", b);
+			}
+		}
+		if (rc == 0 || rc == 1 || rc == 5)
 			break;
 	}
 	p = put_rc(b, rc, ocs, st);
@@ -306,8 +348,8 @@ static int probe(void)
 	} else {
 		put(p, " no response UPIU");
 	}
-	con_str("TUR", b);
-	if (!resp_at)
+	con_str(first_st == 2 ? "" : "TUR", b);
+	if (!resp_at || rc)
 		return 0;
 
 	/*
@@ -323,6 +365,7 @@ static int probe(void)
 		rc = scsi(cap10, sizeof(cap10), 8, prdt_len, &ocs, &st);
 		p = put_rc(b, rc, ocs, st);
 		p = put_dec(put(p, " prdt "), prdt_len);
+		p = put_dec(put(p, " slot "), slot);
 		p = put_hex(put(p, " last "), be32(data), 8);
 		put_dec(put(p, " blk "), be32(data + 4));
 		con_str(i ? "" : "CAPACITY", b);
@@ -401,7 +444,7 @@ void shim_main(uint64_t dtb)
 	if (!xp.fb_ok)
 		xp_reset();
 	con_clear(GREY);
-	con_title("EXYNOS X3.1 RUNS");
+	con_title("EXYNOS X3.2 RUNS");
 	con_str("MODEL", xp.model[0] ? xp.model : "(no DTB)");
 	p = put_hex(put(b, "IMG "), xp.image, 9);
 	put_dec(put(p, " size "), (uint32_t)(xp.image_end - xp.image));
@@ -412,7 +455,7 @@ void shim_main(uint64_t dtb)
 
 	int y = con_row();
 	con_set_row(24);
-	con_title(ok ? "EXYNOS X3.1: OK  " : "EXYNOS X3.1: STOP");
+	con_title(ok ? "EXYNOS X3.2: OK  " : "EXYNOS X3.2: STOP");
 	con_set_row(y);
 	con_skip();
 	int tick_y = con_row();
