@@ -431,7 +431,7 @@ Source: LineageOS android_kernel_samsung_universal9810, branch lineage-17.1
 Inference (not verified): after S-Boot hands over, the FMP/SMU state does not
 allow normal-world data DMA until the OS makes those two calls; that would
 give exactly IS.SBFES on data while descriptor/response DMA works.
-- **X3.8** (boot.img sha256 1e673b9b..., flashed 2026-10-28 with verified readback, result pending): makes the two
+- **X3.8** (boot.img sha256 1e673b9b..., flashed 2026-10-28 with verified readback): makes the two
   calls Samsung's driver makes before any I/O, FMP_SECURITY(0, SMU_EMBEDDED,
   CFG_DESCTYPE_3) and SMU(SMU_INIT, SMU_EMBEDDED), and shows their return
   values (0 = success); UCD layout now Samsung's (response at 1024, PRDT at
@@ -439,3 +439,13 @@ give exactly IS.SBFES on data while descriptor/response DMA works.
   Then the X3.5 probe: wake-up, one 4 KB READ(10) of LBA 1 into a 0xA5
   buffer, and on "EFI PART" the GPT, partitions and BOOT self-check. S-Boot
   descriptor dump removed (findings above).
+
+**X3.8 result on the G960F (photo): both firmware calls return 0** (FMP_SECURITY
+desc 3 -> 0, SMU_INIT -> 0), UCD in Samsung's layout, wake-up as before, but
+READ(10) LBA 1 again GOOD with the buffer untouched and **IS 0x00020001
+(SBFES)**. So FMPSECURITY/SMU_INIT alone do not fix the data path. Still open.
+Not tried yet: a full host re-init as Linux does (vendor HCI_SW_RST, UniPro /
+PHY setup from ufs-cal-9810.c, link startup, NOP OUT, fDeviceInit) and the
+io-coherency setting; and checking which AXI/DMA vendor registers S-Boot left.
+UFS is parked while XNU bring-up starts (the SDM845 M4 also ran without
+storage writes).
