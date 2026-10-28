@@ -372,7 +372,7 @@ Not the address range as such (S-Boot DMAs our own kernel into the same
 0x80xxxxxx RAM). Guess: the host reads our PRDT entry in another layout
 (Linux's exynos FMP code mentions a secure FMP setting selecting the entry
 format) and DMAs to a bogus address.
-- **X3.6** (boot.img sha256 2afe2892..., not flashed yet): before touching the
+- **X3.6** (boot.img sha256 2afe2892..., flashed 2026-10-28 with verified readback, result pending): before touching the
   host, reads S-Boot's own request list (UTRLBA, 0xEF002000) from RAM: per used
   slot DW0, OCS, UCD address, the raw response and PRDT fields, the command's
   opcode and expected length, and 64 bytes from its PRDT offset. That is the
