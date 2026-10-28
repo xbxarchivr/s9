@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Galaxy S9 Exynos milestone X5: full UFS host re-init, then re-run the X3
  * read-only probe. CPU0 only.
  *
@@ -73,6 +73,10 @@
 #define VS_IOP_ACG	0x100
 #define VS_SMU_ABORT	0x10c
 
+/* FORCE_HCS / CLKSTOP_CTRL bits (ufs-exynos.h) */
+#define CLK_STOP_CTRL_EN_ALL	0xde0u	/* REFCLKOUT|MPHY_APB|UFSP_DRCG|REFCLK|PCLK|MCLK */
+#define CLK_STOP_ALL		0x17u	/* REFCLKOUT|REFCLK|UNIPRO_MCLK|UNIPRO_PCLK */
+
 /* HCS bits */
 #define HCS_DP		(1u << 0)
 #define HCS_UTRLRDY	(1u << 1)
@@ -93,6 +97,8 @@
 #define SMC_CMD_SMU		0xc2001850UL
 #define SMU_EMBEDDED		0
 #define SMU_INIT		0
+#define SMU_ABORT		2
+#define ACCESS_CONTROL_ABORT	0x14	/* SMU_ABORT return: the SMU blocked it */
 #define CFG_DESCTYPE_3		3	/* 128-byte FMP PRDT entries */
 
 #define BLOCK		4096u
@@ -758,7 +764,15 @@ static int reinit(void)
 	wr32(UFS_VS + VS_TMNEXUS, 0xffffffff);
 	wr32(UFS_VS + VS_BURST, 0x98000003);	/* WLU_EN | BURST_LEN(3) */
 	wr32(UFS_VS + VS_IOP_ACG, rd32(UFS_VS + VS_IOP_ACG) & ~1u);
-	wr32(UFS_VS + VS_UFS_ACG, rd32(UFS_VS + VS_UFS_ACG) & ~1u);
+	/*
+	 * X5.1: clocks as pre_setup_clocks(on) / link_startup_notify(PRE) leave
+	 * them: HW ACG off (UFS_ACG_DISABLE |= 1; X5 cleared it), clock-stop
+	 * control enabled incl. UFSP_DRCG_EN (FORCE_HCS |= 0xDE0; the SW reset
+	 * left 0x900), nothing stopped (CLKSTOP &= ~CLK_STOP_ALL).
+	 */
+	wr32(UFS_VS + VS_UFS_ACG, rd32(UFS_VS + VS_UFS_ACG) | 1u);
+	wr32(UFS_VS + VS_FORCE_HCS, rd32(UFS_VS + VS_FORCE_HCS) | CLK_STOP_CTRL_EN_ALL);
+	wr32(UFS_VS + VS_CLKSTOP, rd32(UFS_VS + VS_CLKSTOP) & ~CLK_STOP_ALL);
 	dsb();
 
 	/* device reset_n toggle (exynos_ufs_dev_hw_reset) */
@@ -890,6 +904,9 @@ static int reinit(void)
 	con_str("FDEV INIT", b);
 
 	vs_dump("VS AFTER");
+	p = put_hex(put(b, "vs_is "), rd32(UFS_VS + VS_IS), 8);
+	put_hex(put(p, " abort_info "), rd32(UFS_VS + VS_SMU_ABORT), 8);
+	con_str("PRE DATA", b);
 	return flag ? -8 : 0;
 }
 
@@ -967,11 +984,19 @@ static int probe(void)
 	put_hex(put(p, " "), be32(data + 4), 8);
 	con_str("BUFFER", b);
 	p = put_hex(put(b, "is "), hci(REG_IS), 8);
-	p = put_hex(put(p, " vs_is "), rd32(UFS_VS + VS_IS), 8);
-	put_hex(put(p, " smu_abort "), rd32(UFS_VS + VS_SMU_ABORT), 8);
+	put_hex(put(p, " vs_is "), rd32(UFS_VS + VS_IS), 8);
 	con_str("AFTER", b);
-	if (rc || !(data[0] == 'E' && data[1] == 'F' && data[2] == 'I' && data[3] == ' '))
+	p = put_hex(put(b, "abort_info "), rd32(UFS_VS + VS_SMU_ABORT), 8);
+	put_hex(put(p, " fsm "), rd32(UFS_VS + VS_FSM), 8);
+	con_str("SMU", b);
+	if (rc || !(data[0] == 'E' && data[1] == 'F' && data[2] == 'I' && data[3] == ' ')) {
+		/* as ufshcd_abort: ask the firmware whether the SMU blocked it */
+		uint64_t r_ab = xp_psci(SMC_CMD_SMU, SMU_ABORT, SMU_EMBEDDED, 0);
+		p = put_hex(put(b, "SMU_ABORT -> "), r_ab, 8);
+		put(p, r_ab == ACCESS_CONTROL_ABORT ? " = ACCESS CONTROL" : "");
+		con_str("SMU", b);
 		return 0;
+	}
 
 	/* LBA 0: protective MBR; LBA 1: GPT header. */
 	rc = read_block(0, &ocs, &st);
@@ -1037,7 +1062,7 @@ void shim_main(uint64_t dtb)
 	if (!xp.fb_ok)
 		xp_reset();
 	con_clear(GREY);
-	con_title("EXYNOS X5 RUNS");
+	con_title("EXYNOS X5.1 RUNS");
 	con_str("MODEL", xp.model[0] ? xp.model : "(no DTB)");
 	p = put_hex(put(b, "IMG "), xp.image, 9);
 	put_dec(put(p, " size "), (uint32_t)(xp.image_end - xp.image));
@@ -1055,7 +1080,7 @@ void shim_main(uint64_t dtb)
 
 	int y = con_row();
 	con_set_row(24);
-	con_title(ok ? "EXYNOS X5: OK  " : "EXYNOS X5: STOP");
+	con_title(ok ? "EXYNOS X5.1: OK  " : "EXYNOS X5.1: STOP");
 	con_set_row(y);
 	con_skip();
 	int tick_y = con_row();
