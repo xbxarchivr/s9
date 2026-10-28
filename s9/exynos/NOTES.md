@@ -480,6 +480,25 @@ switch for the Qualcomm-only drivers, GICv2, PSCI psci-id), built by CI.
   cpus=1 keepsyms=1 -v sweettouch=0 sweetkeys=0 sweetusb=0 sweetbattery=0
   sweetcpu=0`. ADT has no /product node (research/ipsw-x/d22ap.adt is not in
   this checkout; only matters for userland). X4 boot.img sha256 95fb6751...
-  (42543104 bytes), flashed 2026-10-28 with verified readback, result pending. Expected: loader screen (INITRD must be
+  (42543104 bytes), flashed 2026-10-28 with verified readback. Expected: loader screen (INITRD must be
   outside 0x92000000-0xaf800000), then the early console / XNU log on the
   panel, most likely ending at "waiting for root device" (no UFS yet).
+
+## X4 result: XNU boots on the G960F (2026-10-28, photo)
+
+The CI kernel (0001-0102) boots to "waiting for root", the same milestone as
+the SDM845's first M4 boot. Seen on the panel (framebuffer console, white on
+black, wrapped): VM bootstrap / zone_init in the 0x92000000 window,
+"SWEET: starting device-tree platform expert", AppleKeyStore, IOWatchdog,
+HID buttons/touch registered (stubs), **"SWEET BATTERY: static fallback"**,
+**"SWEET CPU: Exynos, no Qualcomm OSM: clocks left as S-Boot set them"**,
+"SWEET CPU: requested=1 selected=1", **"cpu=0 mpidr=0x0 came alive; SGI1 OK"**
+and **"1/1 CPUs initialized, SGI1 verified"** (GICv2 SGI + timer IRQs work),
+BSD init, MAC framework, **"SWEET FB: AppleCLCD 1440x2960 stride 5760 at
+0xcc000000, default surface 1, presented as 1125x2436"** (zero-copy
+unavailable, as intended off the SDM845 splash), AMFI/Sandbox policies, HFS
+registered, dlil/ifnet lo0/gif0/stf0, and finally **"waiting on <dict>
+IOProviderClass IOMedia, Content Apple_HFS"**: no root device (no UFS yet).
+The early console's stage bar is drawn at the bottom of the panel.
+Next: cpus=4 (secondary A55s through PSCI psci-id + GICv2 cross-CPU SGIs),
+then a root filesystem (UFS data path, or a RAM disk root while UFS is open).
