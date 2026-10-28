@@ -563,8 +563,8 @@ powering the device down. Diagnostics in the vendor block: VENDOR_SPECIFIC_IS
 +0x38, SMU_ABORT_MATCH_INFO +0x10C, FSM_MONITOR +0xC0, DMA0/1_MONITOR_STATE
 +0xC8/+0xD0. HCI_SW_RST is +0x50 (for a full re-init later), and the DMA mask
 is 32 bits.
-- **X3.9** (boot.img sha256 ad84d706..., copy `out/exynos/boot-x3.9.img`, not
-  flashed yet): X3.8 + those writes on the running link before taking the
+- **X3.9** (boot.img sha256 ad84d706..., copy `out/exynos/boot-x3.9.img`,
+  flashed 2026-10-28 with verified readback, result pending): X3.8 + those writes on the running link before taking the
   request list, dumped before ("VS BEFORE") and after ("VS AFTER"); after the
   4 KB read: IS, vendor IS, SMU abort info, FSM and DMA monitors ("AFTER").
   If data still fails: full re-init (HCI_SW_RST, ufs-cal-9810.c pre/post
