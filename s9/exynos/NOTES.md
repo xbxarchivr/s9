@@ -193,7 +193,7 @@ readback.
   cpu@100; the 2024 upstream series says the vendor firmware does not set
   CNTFRQ_EL0 (hardcoded in the timer node).
 - **X1.5** (QEMU ok at EL1 and with secondaries entering at EL2, boot.img
-  sha256 ba6c15af..., not flashed yet): `xentry.S` now does what Linux's
+  sha256 ba6c15af..., flashed 2026-10-28 with verified readback, result pending): `xentry.S` now does what Linux's
   entry does before anything else: masks interrupts, drops EL2 -> EL1 if
   entered at EL2, writes SCTLR_EL1 = 0x30D00800 (MMU/caches off, LE), sets
   VBAR_EL1; then paints a **blue** bar (top 10 rows of the core's square)
