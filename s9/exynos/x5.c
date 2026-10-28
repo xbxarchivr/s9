@@ -100,6 +100,15 @@
 #define SMU_ABORT		2
 #define ACCESS_CONTROL_ABORT	0x14	/* SMU_ABORT return: the SMU blocked it */
 #define CFG_DESCTYPE_3		3	/* 128-byte FMP PRDT entries */
+#define CFG_DESCTYPE_0		0	/* standard 16-byte entries (kernels without FMP) */
+
+/*
+ * X5.2: descriptor type 0. X5.1 showed the data-in DMA failing with IS.SBFES
+ * while the SMU reports no abort; data (not the response UPIU) goes through
+ * the FMP engine, so try it in its non-FMP layout.
+ */
+#define DESCTYPE		CFG_DESCTYPE_0
+#define PRDT_ENTRY_BYTES	(DESCTYPE == CFG_DESCTYPE_3 ? 128u : 16u)
 
 #define BLOCK		4096u
 #define RESP_FIELD	1024u	/* Exynos quirk: UTRD response offset in bytes */
@@ -681,6 +690,30 @@ static void list_partitions(uint32_t entry_lba, uint32_t nent, uint32_t *boot_lb
 	}
 }
 
+/*
+ * X5.2: the host's error-capture registers after a failed data-in (invalid
+ * UPIU ctrl/address, invalid UTR/DIN offset, vendor IS, RX UPIU match error,
+ * max DOUT, write DMA ctrl, FSM, PRDT hit ratio, DMA0/1 monitors, AXI DMA IF).
+ */
+static void diag_dump(const char *label)
+{
+	static const uint16_t regs[16] = {
+		0x10, 0x14, 0x18, 0x20, 0x24, 0x38, 0x5c, 0x64,
+		0x74, 0xc0, 0xc4, 0xc8, 0xcc, 0xd0, 0xd4, 0xf8
+	};
+	char b[128], *p = b;
+
+	for (int i = 0; i < 16; i++) {
+		p = put_hex(put(put_hex(p, regs[i], 3), "="), rd32(UFS_VS + regs[i]), 8);
+		*p++ = ' ';
+		*p = 0;
+		if (i % 4 == 3) {
+			con_str(i == 3 ? label : "", b);
+			p = b;
+		}
+	}
+}
+
 static void vs_dump(const char *label)
 {
 	static const uint16_t regs[12] = {
@@ -737,13 +770,12 @@ static int reinit(void)
 	con_str("SYS", b);
 
 	/* FMPSECURITY & SMU (exynos_ufs_init) */
-	uint64_t r_sec = xp_psci(SMC_CMD_FMP_SECURITY, 0, SMU_EMBEDDED, CFG_DESCTYPE_3);
+	uint64_t r_sec = xp_psci(SMC_CMD_FMP_SECURITY, 0, SMU_EMBEDDED, DESCTYPE);
 	uint64_t r_smu = xp_psci(SMC_CMD_SMU, SMU_INIT, SMU_EMBEDDED, 0);
 	p = put_hex(put(b, "FMPSECURITY "), r_sec, 8);
 	put_hex(put(p, " SMU_INIT "), r_smu, 8);
 	con_str("FIRMWARE", b);
 
-	vs_dump("VS BEFORE");
 
 	/* host software reset (exynos_ufs_host_reset) */
 	wr32(UFS_VS + VS_FORCE_HCS, rd32(UFS_VS + VS_FORCE_HCS) & ~(1u << 4));	/* auto HCI clk off */
@@ -959,7 +991,7 @@ static int probe(void)
 	if (!good)
 		return 0;
 
-	prdt_len = dword_gran ? 1 : 128;
+	prdt_len = dword_gran ? 1 : PRDT_ENTRY_BYTES;
 
 	/* one 4 KB READ(10) of LBA 1 into a 0xA5-filled buffer: the SBFES test */
 	for (unsigned i = 0; i < BLOCK; i++)
@@ -990,6 +1022,7 @@ static int probe(void)
 	put_hex(put(p, " fsm "), rd32(UFS_VS + VS_FSM), 8);
 	con_str("SMU", b);
 	if (rc || !(data[0] == 'E' && data[1] == 'F' && data[2] == 'I' && data[3] == ' ')) {
+		diag_dump("DIAG");
 		/* as ufshcd_abort: ask the firmware whether the SMU blocked it */
 		uint64_t r_ab = xp_psci(SMC_CMD_SMU, SMU_ABORT, SMU_EMBEDDED, 0);
 		p = put_hex(put(b, "SMU_ABORT -> "), r_ab, 8);
@@ -1062,7 +1095,7 @@ void shim_main(uint64_t dtb)
 	if (!xp.fb_ok)
 		xp_reset();
 	con_clear(GREY);
-	con_title("EXYNOS X5.1 RUNS");
+	con_title("EXYNOS X5.2 RUNS");
 	con_str("MODEL", xp.model[0] ? xp.model : "(no DTB)");
 	p = put_hex(put(b, "IMG "), xp.image, 9);
 	put_dec(put(p, " size "), (uint32_t)(xp.image_end - xp.image));
@@ -1080,7 +1113,7 @@ void shim_main(uint64_t dtb)
 
 	int y = con_row();
 	con_set_row(24);
-	con_title(ok ? "EXYNOS X5.1: OK  " : "EXYNOS X5.1: STOP");
+	con_title(ok ? "EXYNOS X5.2: OK  " : "EXYNOS X5.2: STOP");
 	con_set_row(y);
 	con_skip();
 	int tick_y = con_row();
