@@ -355,7 +355,7 @@ tries): OCS left at our 0x0F, no response UPIU, IS 0. So the order does not
 matter: the first data-in command "succeeds" without reaching our buffer,
 and the host writes no status for anything after it. No-data commands work,
 including the host's DMA of the response UPIU into our memory.
-- **X3.5** (boot.img sha256 296b6ef0..., not flashed yet): one data command
+- **X3.5** (boot.img sha256 296b6ef0..., flashed 2026-10-28 with verified readback, result pending): one data command
   only: READ(10) LBA 1, 4 KB, PRDT 128, into a buffer pre-filled with 0xA5;
   shows how many bytes changed and where, scans the rest of the 16 KB
   descriptor buffer for bytes the host wrote, and reads (only) vendor +0x38,
