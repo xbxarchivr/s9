@@ -312,8 +312,23 @@ cleared the slot with the standard "write 0" while Exynos clears on a 1
 (UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR), so slot 0 stayed busy.
 Guess (not verified): the PRDT entry is Samsung's 128-byte FMP-extended
 entry, so a length of 16 bytes = 0 entries and the host waits forever.
-- **X3.2** (boot.img sha256 669a721c..., flashed 2026-10-28 with verified readback, result pending): OCS 7 with a
+- **X3.2** (boot.img sha256 669a721c..., flashed 2026-10-28 with verified readback): OCS 7 with a
   response counts as the SCSI status; TUR repeated until GOOD, first sense
   key/ASC/ASCQ shown; after a timeout UTRLCLR gets both ~bit and bit, and a
   slot that stays busy is abandoned for the next (16 slots); IS shown on
   timeouts; slot shown on the CAPACITY rows.
+
+**X3.2 result on the G960F (photo):** shim at 0x80128000, list 0x8012F000,
+ucd 0x80132000. **First TUR: CHECK CONDITION, sense 2/04/02 = NOT READY,
+"logical unit not ready, initializing command required"**: S-Boot leaves the
+UFS device in a low-power mode (Linux never sees this: it resets and
+re-initializes the device). Second TUR: timeout, but its UTRD OCS had been
+rewritten 0x0F -> 0x07, so the host did process it (another refusal) and then
+kept the slot busy; IS 0x00000001 (UTRCS). So X3.1's READ CAPACITY hang was
+very likely the same refusal, not the PRDT length.
+- **X3.3** (boot.img sha256 0e98a70e..., not flashed yet): TUR, then START
+  STOP UNIT power condition ACTIVE (CDB 1B 00 00 00 10 00) to the UFS Device
+  W-LUN 0xD0 (5 s timeout, as ufshcd_set_dev_pwr_mode), TUR, START STOP UNIT
+  START=1 to LUN 0, TUR, TUR; stops at the first GOOD. IS cleared (W1C) before
+  each command; timeouts show IS, DBR and the next slot; CHECK CONDITIONs
+  show their sense. Then READ CAPACITY / GPT / BOOT as before.

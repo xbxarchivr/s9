@@ -1,5 +1,5 @@
 /*
- * Galaxy S9 Exynos milestone X3 (rev 1.2): read-only probe of the internal UFS that
+ * Galaxy S9 Exynos milestone X3 (rev 1.3): read-only probe of the internal UFS that
  * S-Boot loaded us from. CPU0 only. Adapted from shim/ufs.c (SDM845 M3).
  *
  * Stock DT (rev26, from the boot.img dt section): ufs@0x11120000
@@ -118,8 +118,8 @@ static void prdt_entry(uint32_t off, uintptr_t buf, uint32_t len)
  * both forms are written (each leaves the other slots alone or clears empty
  * ones); a slot that stays busy is abandoned for the next one.
  */
-static uint32_t scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, uint32_t prdt_field_len,
-		     uint32_t *ocs, uint32_t *st)
+static uint32_t scsi_lun(uint8_t lun, unsigned timeout_ms, const uint8_t *cdb, unsigned cdb_len,
+			 uint32_t len, uint32_t prdt_field_len, uint32_t *ocs, uint32_t *st)
 {
 	static uint8_t tag;
 
@@ -132,7 +132,7 @@ static uint32_t scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, uint32_
 	zero(ucd, sizeof(ucd));
 	ucd[0] = 0x01;			/* COMMAND UPIU */
 	ucd[1] = len ? 0x40 : 0x00;	/* R: data in */
-	ucd[2] = 0;			/* LUN 0 */
+	ucd[2] = lun;
 	ucd[3] = ++tag;
 	ucd[12] = len >> 24;
 	ucd[13] = len >> 16;
@@ -153,9 +153,10 @@ static uint32_t scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, uint32_
 	u->prdt = (len ? prdt_field_len : 0) << 16 | PRDT_FIELD;
 	dsb();
 
+	hci_wr(REG_IS, hci(REG_IS));	/* W1C: start from a clean status */
 	wr32(UFS_VS + VS_NEXUS, rd32(UFS_VS + VS_NEXUS) | bit);	/* SCSI command */
 	hci_wr(REG_UTRLDBR, bit);
-	uint64_t end = xp_now() + xp.cntfrq;	/* 1 s */
+	uint64_t end = xp_now() + xp.cntfrq / 1000 * timeout_ms;
 	while (hci(REG_UTRLDBR) & bit)
 		if (xp_now() > end) {
 			last_is = hci(REG_IS);
@@ -186,6 +187,12 @@ static uint32_t scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, uint32_
 	return *st ? 4 : 0;
 }
 
+static uint32_t scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, uint32_t prdt_field_len,
+		     uint32_t *ocs, uint32_t *st)
+{
+	return scsi_lun(0, 1000, cdb, cdb_len, len, prdt_field_len, ocs, st);
+}
+
 static uint32_t read_block(uint32_t lba, uint32_t *ocs, uint32_t *st)
 {
 	uint8_t cdb[10] = { 0x28, 0, lba >> 24, lba >> 16, lba >> 8, lba, 0, 0, 1, 0 };
@@ -199,8 +206,15 @@ static char *put_rc(char *p, uint32_t rc, uint32_t ocs, uint32_t st)
 	p = put_dec(put(p, "rc "), rc);
 	p = put_hex(put(p, " ocs "), ocs, 2);
 	p = put_hex(put(p, " st "), st, 2);
-	if (rc == 1)
+	if (rc == 1) {
 		p = put_hex(put(p, " is "), last_is, 8);
+		p = put_hex(put(p, " dbr "), hci(REG_UTRLDBR), 4);
+		p = put_dec(put(p, " next slot "), slot);
+	} else if (st == 2) {
+		p = put_hex(put(p, " sense "), sense[0], 1);
+		p = put_hex(put(p, "/"), sense[1], 2);
+		p = put_hex(put(p, "/"), sense[2], 2);
+	}
 	return p;
 }
 
@@ -323,33 +337,40 @@ static int probe(void)
 	put_hex(put(p, " ucd "), (uintptr_t)ucd, 9);
 	con_str("LIST", b);
 
-	/* TEST UNIT READY: no data, so only the response offset matters. */
+	/*
+	 * TEST UNIT READY: no data, so only the response offset matters.
+	 * X3.2 on the G960F: the first TUR said NOT READY, 04/02 "initializing
+	 * command required" (S-Boot leaves the device in a low-power mode; Linux
+	 * always re-initializes it), and the retry then hung its slot. Wake it
+	 * as ufshcd_set_dev_pwr_mode() does: START STOP UNIT with power
+	 * condition ACTIVE to the UFS Device W-LUN (0xD0 in the UPIU), then
+	 * START=1 to LUN 0 if that alone is not enough. Neither moves data.
+	 */
 	static const uint8_t tur[6] = { 0x00 };
-	int first_st = -1;
-	for (int i = 0; i < 4; i++) {	/* a unit attention clears on the next one */
-		rc = scsi(tur, sizeof(tur), 0, 0, &ocs, &st);
-		if (first_st < 0 && resp_at) {
-			first_st = st;
-			if (st == 2) {
-				p = put_hex(put(b, "first: CHECK CONDITION sense "), sense[0], 1);
-				p = put_hex(put(p, "/"), sense[1], 2);
-				put_hex(put(p, "/"), sense[2], 2);
-				con_str("TUR", b);
-			}
+	static const uint8_t ssu_active[6] = { 0x1b, 0, 0, 0, 0x10, 0 };
+	static const uint8_t ssu_start[6] = { 0x1b, 0, 0, 0, 0x01, 0 };
+	int good = 0;
+	for (int step = 0; step < 6 && !good && slot < 16; step++) {
+		const char *what;
+		if (step == 1) {
+			rc = scsi_lun(0xd0, 5000, ssu_active, 6, 0, 0, &ocs, &st);
+			what = "SSU ACTIVE";
+		} else if (step == 3) {
+			rc = scsi_lun(0, 5000, ssu_start, 6, 0, 0, &ocs, &st);
+			what = "SSU START";
+		} else {
+			rc = scsi(tur, sizeof(tur), 0, 0, &ocs, &st);
+			what = "TUR";
+			good = rc == 0;
 		}
-		if (rc == 0 || rc == 1 || rc == 5)
-			break;
+		p = put_rc(b, rc, ocs, st);
+		if (resp_at && dword_gran < 0) {
+			dword_gran = resp_at == RESP_FIELD * 4;
+			put(p, dword_gran ? " (dwords)" : " (bytes)");
+		}
+		con_str(what, b);
 	}
-	p = put_rc(b, rc, ocs, st);
-	if (resp_at) {
-		dword_gran = resp_at == RESP_FIELD * 4;
-		p = put_dec(put(p, " resp @"), resp_at);
-		put(p, dword_gran ? " = dwords (standard)" : " = bytes (Exynos)");
-	} else {
-		put(p, " no response UPIU");
-	}
-	con_str(first_st == 2 ? "" : "TUR", b);
-	if (!resp_at || rc)
+	if (!good)
 		return 0;
 
 	/*
@@ -444,7 +465,7 @@ void shim_main(uint64_t dtb)
 	if (!xp.fb_ok)
 		xp_reset();
 	con_clear(GREY);
-	con_title("EXYNOS X3.2 RUNS");
+	con_title("EXYNOS X3.3 RUNS");
 	con_str("MODEL", xp.model[0] ? xp.model : "(no DTB)");
 	p = put_hex(put(b, "IMG "), xp.image, 9);
 	put_dec(put(p, " size "), (uint32_t)(xp.image_end - xp.image));
@@ -455,7 +476,7 @@ void shim_main(uint64_t dtb)
 
 	int y = con_row();
 	con_set_row(24);
-	con_title(ok ? "EXYNOS X3.2: OK  " : "EXYNOS X3.2: STOP");
+	con_title(ok ? "EXYNOS X3.3: OK  " : "EXYNOS X3.3: STOP");
 	con_set_row(y);
 	con_skip();
 	int tick_y = con_row();
