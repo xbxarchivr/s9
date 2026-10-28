@@ -480,6 +480,6 @@ switch for the Qualcomm-only drivers, GICv2, PSCI psci-id), built by CI.
   cpus=1 keepsyms=1 -v sweettouch=0 sweetkeys=0 sweetusb=0 sweetbattery=0
   sweetcpu=0`. ADT has no /product node (research/ipsw-x/d22ap.adt is not in
   this checkout; only matters for userland). X4 boot.img sha256 95fb6751...
-  (42543104 bytes), not flashed yet. Expected: loader screen (INITRD must be
+  (42543104 bytes), flashed 2026-10-28 with verified readback, result pending. Expected: loader screen (INITRD must be
   outside 0x92000000-0xaf800000), then the early console / XNU log on the
   panel, most likely ending at "waiting for root device" (no UFS yet).
