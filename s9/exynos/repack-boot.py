@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Put a new kernel into a copy of the phone's own boot.img.
 
-    repack-boot.py STOCK_BOOT.img Image OUT.img
+    repack-boot.py STOCK_BOOT.img Image OUT.img [--ramdisk PAYLOAD]
 
 Exynos S-Boot boot images differ between firmware releases (header v0 with
 Samsung's dt_size in the header_version slot, v1 with recovery_dtbo, v2 with
@@ -12,6 +12,9 @@ dt, recovery_dtbo, dtb, Samsung's signature tail) is copied byte for byte.
 
 The kernel is stored the way the stock one is: gzip if stock is gzip, and
 any DTBs appended to the stock kernel are appended to ours too.
+
+--ramdisk replaces the ramdisk as well (X4: the SWEETXNU payload rides there,
+as on the SDM845); everything after it is shifted, still byte for byte.
 """
 import gzip
 import hashlib
@@ -43,10 +46,16 @@ def appended_dtbs(blob):
 
 
 def main():
-    if len(sys.argv) != 4:
+    args = sys.argv[1:]
+    ramdisk = None
+    if "--ramdisk" in args:
+        i = args.index("--ramdisk")
+        ramdisk = open(args[i + 1], "rb").read()
+        del args[i:i + 2]
+    if len(args) != 3:
         sys.exit(__doc__)
-    stock = open(sys.argv[1], "rb").read()
-    image = open(sys.argv[2], "rb").read()
+    stock = open(args[0], "rb").read()
+    image = open(args[1], "rb").read()
     if stock[:8] != b"ANDROID!":
         sys.exit("stock image has no ANDROID! magic")
     (k_size, _k_addr, r_size, _r_addr, s_size, _s_addr, _tags, page,
@@ -76,6 +85,11 @@ def main():
 
     # Section layout after the kernel, for the id hash.
     tail = stock[old_end:]
+    if ramdisk is not None:
+        tail = ramdisk.ljust(align(len(ramdisk), page), b"\0") + tail[align(r_size, page):]
+        delta += align(len(ramdisk), page) - align(r_size, page)
+        r_size = len(ramdisk)
+        struct.pack_into("<I", hdr, 16, r_size)
     r_off = 0
     s_off = r_off + align(r_size, page)
     extra = []
@@ -101,7 +115,7 @@ def main():
     hdr[576:608] = sha.digest().ljust(32, b"\0")
 
     out = bytes(hdr) + kernel.ljust(align(len(kernel), page), b"\0") + tail
-    open(sys.argv[3], "wb").write(out)
+    open(args[2], "wb").write(out)
     print("header v%s page %d, kernel %s %d -> %d bytes%s, image %d -> %d bytes"
           % (hv if hv <= 2 else "0+dt(%d)" % hv, page, kind, k_size, len(kernel),
              " (+%d bytes of appended DTBs)" % len(dtbs) if dtbs else "",

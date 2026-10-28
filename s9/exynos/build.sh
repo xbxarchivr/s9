@@ -1,7 +1,8 @@
 #!/bin/bash
 # Build an Exynos (SM-G960F/G965F) shim stage and put it into a copy of the
 # phone's own stock boot.img (tools: backup-boot.sh fetches it from TWRP).
-#   ./build.sh [x1|x2|x3]               stage to build (default x1)
+#   ./build.sh [x1|x2|x3|x4]            stage to build (default x1)
+#   PAYLOAD=out/exynos/payload.bin ./build.sh x4   XNU payload as the ramdisk
 #   STOCK_BOOT=path ./build.sh          base boot.img (default backup/exynos-boot-stock.img)
 #   out/exynos/boot.img      -> exynos/flash-twrp.sh (verified dd)
 #   out/exynos/boot.tar.md5  -> Odin, AP slot
@@ -21,7 +22,9 @@ case $STAGE in
 x1) main="exynos/x1.c exynos/xentry.S" ;;
 x2) main="exynos/x2.c exynos/xplat.c exynos/xentry.S" ;;
 x3) main="exynos/x3.c exynos/xplat.c exynos/xentry.S" ;;
-*) echo "usage: exynos/build.sh [x1|x2|x3]" >&2; exit 2 ;;
+x4) main="exynos/x4.c exynos/xplat.c exynos/xentry.S shim/loader.c"
+    [ -f "${PAYLOAD:-}" ] || { echo "x4 needs PAYLOAD=path (tools/mkpayload.py KERNEL out/exynos/exynos.adt OUT)" >&2; exit 2; } ;;
+*) echo "usage: exynos/build.sh [x1|x2|x3|x4]" >&2; exit 2 ;;
 esac
 
 out=out/exynos
@@ -47,7 +50,7 @@ if [ ! -f "$STOCK_BOOT" ]; then
 	echo "no $STOCK_BOOT: Image only. Run exynos/twrp-boot.sh backup with the phone in TWRP first." >&2
 	exit 0
 fi
-python3 -I exynos/repack-boot.py "$STOCK_BOOT" $out/Image $out/boot.img
+python3 -I exynos/repack-boot.py "$STOCK_BOOT" $out/Image $out/boot.img ${PAYLOAD:+--ramdisk "$PAYLOAD"}
 (cd $out && tar -H ustar -cf boot.tar boot.img && md5sum -t boot.tar >> boot.tar && mv boot.tar boot.tar.md5)
 cp $out/boot.img "$out/boot-$STAGE.img"
 ls -l $out/boot.img $out/boot.tar.md5

@@ -449,3 +449,14 @@ PHY setup from ufs-cal-9810.c, link startup, NOP OUT, fDeviceInit) and the
 io-coherency setting; and checking which AXI/DMA vendor registers S-Boot left.
 UFS is parked while XNU bring-up starts (the SDM845 M4 also ran without
 storage writes).
+
+## XNU port started (2026-10-28)
+
+Plan and status: `XNU-PORT.md`. Done: `mkadt.py` (Exynos ADT on top of the
+SDM845 one: 4 A55 with reg = real MPIDR affinity and psci-id 0..3, GIC-400
+GICD 0x10101000 / GICC 0x10102000, vtimer INTID 27, timebase 26 MHz, fb
+0xCC000000, RAM window 0x92000000-0xAF800000 with the panic log at its top,
+no UFS node); `repack-boot.py --ramdisk` (tested on the real stock image: dt
+section kept); stage `x4.c` (`build.sh x4` with PAYLOAD=; QEMU: reads the
+initrd from /chosen, refuses a non-payload). Next: kernel patch 0102 (Exynos
+switch for the Qualcomm-only drivers, GICv2, PSCI psci-id), built by CI.
