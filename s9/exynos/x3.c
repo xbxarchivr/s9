@@ -1,5 +1,5 @@
 /*
- * Galaxy S9 Exynos milestone X3 (rev 1.5): read-only probe of the internal UFS that
+ * Galaxy S9 Exynos milestone X3 (rev 1.6): read-only probe of the internal UFS that
  * S-Boot loaded us from. CPU0 only. Adapted from shim/ufs.c (SDM845 M3).
  *
  * Stock DT (rev26, from the boot.img dt section): ufs@0x11120000
@@ -292,6 +292,60 @@ static void list_partitions(uint32_t entry_lba, uint32_t nent, uint32_t *boot_lb
 	}
 }
 
+static int in_ram(uint64_t a)
+{
+	return (a >= 0x80000000UL && a < 0x100000000UL) ||
+	       (a >= 0x880000000UL && a < 0x900000000UL);
+}
+
+/*
+ * X3.5 on the G960F: our data-in read ended in IS.SBFES (system bus fatal
+ * error) with our buffer untouched, so the host likely reads our PRDT entry
+ * in another layout and DMAs to a bogus address. S-Boot's own request list
+ * is still in RAM: show the UTRD fields and PRDT entries Samsung's code wrote
+ * when it loaded us. Reads RAM only, before we touch the host.
+ */
+static void dump_sboot(void)
+{
+	uint64_t base = (uint64_t)hci(REG_UTRLBAU) << 32 | hci(REG_UTRLBA);
+	char b[96], *p;
+	int shown = 0;
+
+	if (!in_ram(base)) {
+		con_str("S-BOOT", "list not in RAM");
+		return;
+	}
+	for (int i = 0; i < 16 && shown < 2; i++) {
+		uintptr_t d = base + i * 32;
+		uint64_t ucdp = (uint64_t)rd32(d + 20) << 32 | rd32(d + 16);
+		uint32_t rf = rd32(d + 24), pf = rd32(d + 28);
+		if (!ucdp || !in_ram(ucdp))
+			continue;
+		shown++;
+		p = put_dec(put(b, "slot "), i);
+		p = put_hex(put(p, " dw0 "), rd32(d), 8);
+		p = put_hex(put(p, " ocs "), rd32(d + 8) & 0xff, 2);
+		put_hex(put(p, " ucd "), ucdp, 9);
+		con_str(shown == 1 ? "S-BOOT" : "", b);
+		p = put_hex(put(b, "resp "), rf, 8);
+		p = put_hex(put(p, " prdt "), pf, 8);
+		p = put_hex(put(p, " op "), rd8(ucdp + 16), 2);
+		put_hex(put(p, " len "), __builtin_bswap32(rd32(ucdp + 12)), 8);
+		con_str("", b);
+		uintptr_t e = ucdp + (pf & 0xffff);
+		if (!in_ram(e))
+			continue;
+		for (int r = 0; r < 4; r++) {	/* 64 bytes from the PRDT offset */
+			p = put_hex(put(b, "+"), r * 16, 2);
+			for (int k = 0; k < 4; k++)
+				p = put_hex(put(p, " "), rd32(e + r * 16 + k * 4), 8);
+			con_str("", b);
+		}
+	}
+	if (!shown)
+		con_str("S-BOOT", "no used slot in its list");
+}
+
 static int probe(void)
 {
 	char b[96], *p;
@@ -330,6 +384,8 @@ static int probe(void)
 		con_str("STOP", "requests still pending");
 		return 0;
 	}
+
+	dump_sboot();
 
 	/* Take over the transfer request list: stop, point at ours, run. */
 	hci_wr(REG_UTRLRSR, 0);
@@ -503,7 +559,7 @@ void shim_main(uint64_t dtb)
 	if (!xp.fb_ok)
 		xp_reset();
 	con_clear(GREY);
-	con_title("EXYNOS X3.5 RUNS");
+	con_title("EXYNOS X3.6 RUNS");
 	con_str("MODEL", xp.model[0] ? xp.model : "(no DTB)");
 	p = put_hex(put(b, "IMG "), xp.image, 9);
 	put_dec(put(p, " size "), (uint32_t)(xp.image_end - xp.image));
@@ -514,7 +570,7 @@ void shim_main(uint64_t dtb)
 
 	int y = con_row();
 	con_set_row(24);
-	con_title(ok ? "EXYNOS X3.5: OK  " : "EXYNOS X3.5: STOP");
+	con_title(ok ? "EXYNOS X3.6: OK  " : "EXYNOS X3.6: STOP");
 	con_set_row(y);
 	con_skip();
 	int tick_y = con_row();

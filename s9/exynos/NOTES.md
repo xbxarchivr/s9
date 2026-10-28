@@ -355,8 +355,25 @@ tries): OCS left at our 0x0F, no response UPIU, IS 0. So the order does not
 matter: the first data-in command "succeeds" without reaching our buffer,
 and the host writes no status for anything after it. No-data commands work,
 including the host's DMA of the response UPIU into our memory.
-- **X3.5** (boot.img sha256 296b6ef0..., flashed 2026-10-28 with verified readback, result pending): one data command
+- **X3.5** (boot.img sha256 296b6ef0..., flashed 2026-10-28 with verified readback): one data command
   only: READ(10) LBA 1, 4 KB, PRDT 128, into a buffer pre-filled with 0xA5;
   shows how many bytes changed and where, scans the rest of the 16 KB
   descriptor buffer for bytes the host wrote, and reads (only) vendor +0x38,
   +0xC0 and IS afterwards. Continues to the GPT only if "EFI PART" arrives.
+
+**X3.5 result on the G960F (photo):** wake-up as before (TUR 2/04/02, SSU
+ACTIVE GOOD, TUR GOOD). READ(10) LBA 1, 4 KB, PRDT 128 (slot 3): OCS 0, GOOD,
+residual 0, **buffer unchanged (0 of 4096 bytes, still 0xA5)**, nothing else
+in the descriptor buffer changed, vendor +0x38 / +0xC0 = 0. **IS = 0x00020001:
+bit 17 SBFES, system bus fatal error** (+ UTRCS). So the host's data write was
+rejected on the bus, and a host with SBFES set stops processing until reset:
+that is why no later command in X3.3/X3.4 got a status.
+Not the address range as such (S-Boot DMAs our own kernel into the same
+0x80xxxxxx RAM). Guess: the host reads our PRDT entry in another layout
+(Linux's exynos FMP code mentions a secure FMP setting selecting the entry
+format) and DMAs to a bogus address.
+- **X3.6** (boot.img sha256 2afe2892..., not flashed yet): before touching the
+  host, reads S-Boot's own request list (UTRLBA, 0xEF002000) from RAM: per used
+  slot DW0, OCS, UCD address, the raw response and PRDT fields, the command's
+  opcode and expected length, and 64 bytes from its PRDT offset. That is the
+  layout Samsung's own code used to load us. Then the X3.5 probe as before.
