@@ -1,5 +1,5 @@
 /*
- * Galaxy S9 Exynos milestone X3 (rev 1.3): read-only probe of the internal UFS that
+ * Galaxy S9 Exynos milestone X3 (rev 1.4): read-only probe of the internal UFS that
  * S-Boot loaded us from. CPU0 only. Adapted from shim/ufs.c (SDM845 M3).
  *
  * Stock DT (rev26, from the boot.img dt section): ufs@0x11120000
@@ -74,7 +74,9 @@ static volatile int in_exc;
 static int dword_gran = -1;	/* 0: offsets in bytes (Exynos quirk), 1: standard */
 static uint32_t prdt_len;	/* value of the PRDT length field that moves data */
 static uint32_t resp_at;	/* where the response UPIU landed */
-static int slot;		/* request slot in use; moves on if one gets stuck */
+static int slot;		/* next request slot; every command takes a fresh one */
+static int last_slot;
+static uint32_t resid;		/* residual transfer count from the last response */
 static uint32_t last_is;	/* REG_IS after the last command */
 static uint8_t sense[3];	/* key, ASC, ASCQ of the last CHECK CONDITION */
 
@@ -123,10 +125,16 @@ static uint32_t scsi_lun(uint8_t lun, unsigned timeout_ms, const uint8_t *cdb, u
 {
 	static uint8_t tag;
 
-	if (slot >= 16)
+	/* a fresh slot per command, skipping any still busy from a hang */
+	int k = 0;
+	while (k < 16 && (hci(REG_UTRLDBR) & 1u << ((slot + k) & 15)))
+		k++;
+	if (k == 16)
 		return 5;
-	volatile struct utrd *u = &utrl[slot];
-	uint32_t bit = 1u << slot;
+	last_slot = (slot + k) & 15;
+	slot = (last_slot + 1) & 15;
+	volatile struct utrd *u = &utrl[last_slot];
+	uint32_t bit = 1u << last_slot;
 
 	zero((volatile uint8_t *)u, sizeof(*u));
 	zero(ucd, sizeof(ucd));
@@ -163,8 +171,6 @@ static uint32_t scsi_lun(uint8_t lun, unsigned timeout_ms, const uint8_t *cdb, u
 			hci_wr(REG_UTRLCLR, ~bit);	/* standard: 0 clears */
 			hci_wr(REG_UTRLCLR, bit);	/* Exynos: 1 clears */
 			xp_delay_ms(10);
-			if (hci(REG_UTRLDBR) & bit)
-				slot++;
 			*ocs = u->dw2 & 0xff;
 			*st = 0xff;
 			return 1;
@@ -174,6 +180,7 @@ static uint32_t scsi_lun(uint8_t lun, unsigned timeout_ms, const uint8_t *cdb, u
 	*ocs = u->dw2 & 0xff;
 	resp_at = ucd[RESP_FIELD] == 0x21 ? RESP_FIELD : ucd[RESP_FIELD * 4] == 0x21 ? RESP_FIELD * 4 : 0;
 	*st = resp_at ? ucd[resp_at + 7] : 0xff;
+	resid = resp_at ? be32(ucd + resp_at + 12) : 0;
 	if (resp_at && *st == 2) {	/* fixed-format sense after the 2-byte length */
 		sense[0] = ucd[resp_at + 32 + 2 + 2] & 0xf;
 		sense[1] = ucd[resp_at + 32 + 2 + 12];
@@ -209,7 +216,8 @@ static char *put_rc(char *p, uint32_t rc, uint32_t ocs, uint32_t st)
 	if (rc == 1) {
 		p = put_hex(put(p, " is "), last_is, 8);
 		p = put_hex(put(p, " dbr "), hci(REG_UTRLDBR), 4);
-		p = put_dec(put(p, " next slot "), slot);
+	} else if (rc == 2) {
+		p = put_hex(put(p, " is "), last_is, 8);
 	} else if (st == 2) {
 		p = put_hex(put(p, " sense "), sense[0], 1);
 		p = put_hex(put(p, "/"), sense[1], 2);
@@ -350,7 +358,7 @@ static int probe(void)
 	static const uint8_t ssu_active[6] = { 0x1b, 0, 0, 0, 0x10, 0 };
 	static const uint8_t ssu_start[6] = { 0x1b, 0, 0, 0, 0x01, 0 };
 	int good = 0;
-	for (int step = 0; step < 6 && !good && slot < 16; step++) {
+	for (int step = 0; step < 6 && !good; step++) {
 		const char *what;
 		if (step == 1) {
 			rc = scsi_lun(0xd0, 5000, ssu_active, 6, 0, 0, &ocs, &st);
@@ -375,29 +383,47 @@ static int probe(void)
 
 	/*
 	 * READ CAPACITY(10), 8 bytes. PRDT length: 1 entry (standard), or in
-	 * bytes: 16 (plain entry) / 128 (Samsung FMP-extended entry).
+	 * bytes: 128 (Samsung FMP-extended entry, as Linux's exynos FMP code
+	 * sizes them) / 16 (plain entry). X3.3 on the G960F: 16 completed GOOD
+	 * with no data (likely 0 entries, data dropped), and 128 right after it
+	 * came back with no status and no response; so 128 goes first now.
 	 */
 	static const uint8_t cap10[10] = { 0x25 };
-	static const uint32_t tries_b[2] = { 16, 128 };
-	int ntries = dword_gran ? 1 : 2;
-	for (int i = 0; i < ntries; i++) {
+	static const uint32_t tries_b[2] = { 128, 16 };
+	int ntries = dword_gran ? 1 : 2, have_cap = 0;
+	for (int i = 0; i < ntries && !have_cap; i++) {
 		prdt_len = dword_gran ? 1 : tries_b[i];
 		zero(data, 8);
 		rc = scsi(cap10, sizeof(cap10), 8, prdt_len, &ocs, &st);
 		p = put_rc(b, rc, ocs, st);
 		p = put_dec(put(p, " prdt "), prdt_len);
-		p = put_dec(put(p, " slot "), slot);
+		p = put_dec(put(p, " slot "), last_slot);
+		p = put_dec(put(p, " res "), resid);
 		p = put_hex(put(p, " last "), be32(data), 8);
 		put_dec(put(p, " blk "), be32(data + 4));
 		con_str(i ? "" : "CAPACITY", b);
-		if (!rc && be32(data + 4) == BLOCK)
-			break;
+		have_cap = !rc && be32(data + 4) == BLOCK;
 	}
-	if (rc || be32(data + 4) != BLOCK)
-		return 0;
-	p = put_dec(b, (uint32_t)(((uint64_t)be32(data) + 1) >> 8));
-	put(p, " MiB on LUN 0");
-	con_str("", b);
+	if (have_cap) {
+		p = put_dec(b, (uint32_t)(((uint64_t)be32(data) + 1) >> 8));
+		put(p, " MiB on LUN 0");
+		con_str("", b);
+	} else {
+		/* maybe only this command is odd: try the GPT header with each length */
+		int found = 0;
+		for (int i = 0; i < ntries && !found; i++) {
+			prdt_len = dword_gran ? 1 : tries_b[i];
+			rc = read_block(1, &ocs, &st);
+			found = !rc && data[0] == 'E' && data[1] == 'F' && data[2] == 'I' && data[3] == ' ';
+			p = put_rc(b, rc, ocs, st);
+			p = put_dec(put(p, " prdt "), prdt_len);
+			p = put_hex(put(p, " first "), be32(data), 8);
+			put(p, found ? " EFI PART" : "");
+			con_str(i ? "" : "GPT TRY", b);
+		}
+		if (!found)
+			return 0;
+	}
 
 	/* LBA 0: protective MBR; LBA 1: GPT header. */
 	rc = read_block(0, &ocs, &st);
@@ -465,7 +491,7 @@ void shim_main(uint64_t dtb)
 	if (!xp.fb_ok)
 		xp_reset();
 	con_clear(GREY);
-	con_title("EXYNOS X3.3 RUNS");
+	con_title("EXYNOS X3.4 RUNS");
 	con_str("MODEL", xp.model[0] ? xp.model : "(no DTB)");
 	p = put_hex(put(b, "IMG "), xp.image, 9);
 	put_dec(put(p, " size "), (uint32_t)(xp.image_end - xp.image));
@@ -476,7 +502,7 @@ void shim_main(uint64_t dtb)
 
 	int y = con_row();
 	con_set_row(24);
-	con_title(ok ? "EXYNOS X3.3: OK  " : "EXYNOS X3.3: STOP");
+	con_title(ok ? "EXYNOS X3.4: OK  " : "EXYNOS X3.4: STOP");
 	con_set_row(y);
 	con_skip();
 	int tick_y = con_row();

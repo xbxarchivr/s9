@@ -326,9 +326,24 @@ re-initializes the device). Second TUR: timeout, but its UTRD OCS had been
 rewritten 0x0F -> 0x07, so the host did process it (another refusal) and then
 kept the slot busy; IS 0x00000001 (UTRCS). So X3.1's READ CAPACITY hang was
 very likely the same refusal, not the PRDT length.
-- **X3.3** (boot.img sha256 0e98a70e..., flashed 2026-10-28 with verified readback, result pending): TUR, then START
+- **X3.3** (boot.img sha256 0e98a70e..., flashed 2026-10-28 with verified readback): TUR, then START
   STOP UNIT power condition ACTIVE (CDB 1B 00 00 00 10 00) to the UFS Device
   W-LUN 0xD0 (5 s timeout, as ufshcd_set_dev_pwr_mode), TUR, START STOP UNIT
   START=1 to LUN 0, TUR, TUR; stops at the first GOOD. IS cleared (W1C) before
   each command; timeouts show IS, DBR and the next slot; CHECK CONDITIONs
   show their sense. Then READ CAPACITY / GPT / BOOT as before.
+
+**X3.3 result on the G960F (photo): the device wakes up.** Shim at 0x800B0000.
+TUR: CHECK CONDITION 2/04/02 again (bytes granularity again). **START STOP
+UNIT (ACTIVE) to W-LUN 0xD0: rc 0, OCS 0, GOOD. Next TUR: GOOD.** So waking
+the device as Linux does is the missing step. READ CAPACITY with PRDT length
+16: OCS 0, GOOD, but no data in our buffer (last 0, blk 0). Then with 128:
+DBR cleared but OCS still our preset 0x0F and no response UPIU.
+Guess (not verified): the PRDT entry is the 128-byte FMP-extended one, so 16
+bytes = 0 entries (data dropped, GOOD anyway), and that left the DMA side in a
+bad state for the next command.
+- **X3.4** (boot.img sha256 d51926a3..., not flashed yet): PRDT length 128
+  first, then 16; a fresh request slot per command (skipping busy ones);
+  CAPACITY rows show slot and residual count; IS shown on OCS errors; if
+  CAPACITY fails both ways, READ(10) of LBA 1 is tried with each length and
+  "EFI PART" accepted as proof, then GPT/BOOT as before.
