@@ -502,3 +502,9 @@ IOProviderClass IOMedia, Content Apple_HFS"**: no root device (no UFS yet).
 The early console's stage bar is drawn at the bottom of the panel.
 Next: cpus=4 (secondary A55s through PSCI psci-id + GICv2 cross-CPU SGIs),
 then a root filesystem (UFS data path, or a RAM disk root while UFS is open).
+- **X4.1** (boot.img sha256 78cb1550..., copy `out/exynos/boot-x4.1.img`, not
+  flashed yet): same kernel and ADT, cmdline cpus=4 (payload-cpus4.bin):
+  SweetCPU starts CPU1-3 with PSCI CPU_ON(psci-id 1..3); each runs
+  pe_init_fiq's GICv2 path (records its interface bit) and must answer SGI1.
+  Expected lines: "cpu=N ... PSCI CPU_ON rc=0", "came alive; SGI1 OK",
+  "4/4 CPUs initialized".
