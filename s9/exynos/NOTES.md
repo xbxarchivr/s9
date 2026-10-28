@@ -578,10 +578,15 @@ is 32 bits.
   buffer untouched, IS 0x00020001 (SBFES), vendor IS 0, **SMU_ABORT_MATCH_INFO
   0 (not the SMU)**, FSM 0, DMA0/DMA1 monitor 0x01010101.
 - **X3.10** (boot.img sha256 f230edaf..., copy `out/exynos/boot-x3.10.img`,
-  flashed 2026-10-28 with verified readback, result pending): the 4 KB data buffer is the last 8 KB of ucd (ucd+8192,
+  flashed 2026-10-28 with verified readback): the 4 KB data buffer is the last 8 KB of ucd (ucd+8192,
   4 KB aligned), memory the host's response DMA demonstrably writes. Data
   arriving = an address/window problem; SBFES again = the data path itself
   (then the full host re-init: HCI_SW_RST 0x50, init_host, GPIO_OUT device
   reset, BROKEN_HCE enable via DME_RESET/ENABLE, init_cfg with UniPro mclk
   period read back by DME_GET 0x9514 first, DME_LINKSTARTUP, post_init_cfg
   and hibern8 values, NOP OUT, fDeviceInit).
+- **X3.10 result on the G960F (photo):** data buffer at ucd+8192 (ucd
+  0x80159000): READ(10) GOOD, **buffer untouched (changed 0)**, IS 0x00020001
+  (SBFES), vendor IS 0, SMU abort 0, DMA monitors 0x01010101. So it is NOT the
+  address: the host's data-in path is broken in the state S-Boot hands over,
+  while command/response DMA works. Next: full host re-init (list above).
