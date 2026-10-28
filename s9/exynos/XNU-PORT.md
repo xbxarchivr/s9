@@ -95,6 +95,8 @@ replaces and the Exynos fact or LineageOS reference it rests on.
       --cmdline "cpus=1 sweettouch=0 sweetkeys=0 sweetusb=0 sweetbattery=0 sweetcpu=0 -v"`
 - [x] `PAYLOAD=out/exynos/payload.bin exynos/build.sh x4`, flash, photo:
       **booted to "waiting for root" (IOMedia Apple_HFS) on 2026-10-28**
+- [x] cpus=4 (X4.1): 4/4 A55 cores, PSCI psci-id and GICv2 cross-CPU SGIs OK
+- [ ] root filesystem (UFS data path, or a RAM disk root) -> launchd
 - Expected first stop: the loader's INITRD line, then either XNU's
   framebuffer log or a panic screen. The INITRD range must stay outside
   0x92000000-0xAF800000 (the loader refuses otherwise).
