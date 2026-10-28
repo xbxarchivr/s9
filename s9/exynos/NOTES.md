@@ -624,8 +624,8 @@ is 32 bits.
   only style warnings in sweet_keys.c of the kinds the S9 code already has),
   `kernel.development.sweet` 17265784 bytes, sha256 dea2acb1b54a254b...,
   in `out/exynos/xnu2/`.
-- **X4.3** (boot.img sha256 271a9b48..., copy `out/exynos/boot-x4.3.img`, not
-  flashed yet): that kernel + the 1340 MB ADT + sweet-init RAM disk, cmdline
+- **X4.3** (boot.img sha256 271a9b48..., copy `out/exynos/boot-x4.3.img`,
+  flashed 2026-10-28 with verified readback, result pending): that kernel + the 1340 MB ADT + sweet-init RAM disk, cmdline
   `debug=0xc serial=3 cpus=4 keepsyms=1 -v rd=md0 sweettouch=0 sweetusb=0
   sweetbattery=0 sweetcpu=0` (keys on). Expected: same path to "SWEET init:
   still alive"; "SWEET KEYS: Exynos gpa0=... gpa2=..." and a key=N down=1/0
