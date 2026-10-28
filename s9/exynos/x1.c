@@ -1,6 +1,6 @@
 /*
  * Galaxy S9 Exynos (SM-G960F/G965F, Exynos 9810, starlte/star2lte)
- * milestone X1: prove the shim runs under Samsung's S-Boot and answer the
+ * milestone X1 (rev 1.1): prove the shim runs under Samsung's S-Boot and answer the
  * questions that decide whether this SoC can run XNU at all.
  *
  *   1. Does every core, Mongoose M3 included, support the 16K granule
@@ -47,16 +47,18 @@
 #define NR_NODE			3
 #define RUN_SECONDS		90
 #define PANIC_SECONDS		60
+#define CPU_ROW_H		48	/* con.c rows: 16 px glyphs at scale 3 */
+#define CPU_ROW_COLS		50
 
 #define wsr(r, v) __asm__ volatile("msr " r ", %0" : : "r"((uint64_t)(v)))
 
-extern char _head[], _end[], secondary_entry[];
+extern char _head[], _end[], x_secondary_entry[];
 
-enum { CPU_ABSENT, CPU_WAIT, CPU_UP, CPU_FAULT, CPU_SELF };
+enum { CPU_ABSENT, CPU_CALL, CPU_WAIT, CPU_UP, CPU_FAULT, CPU_SELF };
 
 struct cpu {
 	uint64_t reg;			/* MPIDR affinity from the DT */
-	char compat[28];
+	char compat[28], enable[12];
 	volatile int state;
 	volatile uint64_t midr, mpidr, mmfr0, mmfr1, pfr0, el, esr, elr;
 	int64_t ret;			/* PSCI CPU_ON */
@@ -76,8 +78,9 @@ static struct {
 	uintptr_t dtb, image, image_end;
 	uint32_t dtb_size;
 	char model[48], compat[48], bootloader[32], hardware[32], lcdtype[16];
-	char psci_method[8];
-	uint32_t root_ac, root_sc;
+	char psci_method[8], psci_compat[28];
+	uint32_t psci_cpu_on, psci_cpu_off;	/* PSCI 0.1: function IDs from the DT */
+	uint32_t root_ac, root_sc, rm_ac, rm_sc;
 	int ncpu, nmem, nresv, ngic, ndecon;
 	struct cpu cpu[NR_CPUS];
 	struct region mem[NR_MEM], resv[NR_RESV];
@@ -183,6 +186,8 @@ static uint64_t unit_addr(uintptr_t name)
 		name++;
 	if (!rd8(name))
 		return 0;
+	if (rd8(name + 1) == '0' && (rd8(name + 2) == 'x' || rd8(name + 2) == 'X'))
+		name += 2;
 	for (name++;; name++) {
 		uint8_t c = rd8(name);
 		if (c >= '0' && c <= '9')
@@ -253,6 +258,8 @@ static void dt_prop(void *ctx, int depth, const uintptr_t *names,
 			c->state = CPU_ABSENT;
 		} else if (dt_eq(prop, "compatible") && cpu_slot()) {
 			dt_copy(cpu_slot()->compat, sizeof(cpu_slot()->compat), val, len);
+		} else if (dt_eq(prop, "enable-method") && cpu_slot()) {
+			dt_copy(cpu_slot()->enable, sizeof(cpu_slot()->enable), val, len);
 		}
 		return;
 	}
@@ -268,10 +275,19 @@ static void dt_prop(void *ctx, int depth, const uintptr_t *names,
 		return;
 	}
 
+	/* the node's own cells come before its children in the blob */
+	if (depth == 2 && dt_eq(names[2], "reserved-memory") && len == 4) {
+		if (dt_eq(prop, "#address-cells"))
+			x.rm_ac = be32(val);
+		else if (dt_eq(prop, "#size-cells"))
+			x.rm_sc = be32(val);
+		return;
+	}
+
 	if (depth == 3 && dt_eq(names[2], "reserved-memory") && dt_eq(prop, "reg") &&
 	    x.nresv < NR_RESV) {
-		/* reserved-memory children use the root's cells on every Samsung DT seen so far */
-		uint32_t ac = x.root_ac ? x.root_ac : 2, sc = x.root_sc ? x.root_sc : 2;
+		uint32_t ac = x.rm_ac ? x.rm_ac : x.root_ac ? x.root_ac : 2;
+		uint32_t sc = x.rm_sc ? x.rm_sc : x.root_sc ? x.root_sc : 2;
 		struct region *r = &x.resv[x.nresv++];
 		dt_copy(r->name, sizeof(r->name), names[3], 64);
 		if (len >= 4 * (ac + sc)) {
@@ -283,8 +299,15 @@ static void dt_prop(void *ctx, int depth, const uintptr_t *names,
 		return;
 	}
 
-	if (depth == 2 && dt_base_eq(names[2], "psci") && dt_eq(prop, "method")) {
-		dt_copy(x.psci_method, sizeof(x.psci_method), val, len);
+	if (depth == 2 && dt_base_eq(names[2], "psci")) {
+		if (dt_eq(prop, "method"))
+			dt_copy(x.psci_method, sizeof(x.psci_method), val, len);
+		else if (dt_eq(prop, "compatible"))
+			dt_copy(x.psci_compat, sizeof(x.psci_compat), val, len);
+		else if (dt_eq(prop, "cpu_on") && len == 4)
+			x.psci_cpu_on = be32(val);
+		else if (dt_eq(prop, "cpu_off") && len == 4)
+			x.psci_cpu_off = be32(val);
 		return;
 	}
 
@@ -373,42 +396,64 @@ static void cpu_read(struct cpu *c)
 	c->el = (rsr("CurrentEL") >> 2) & 3;
 }
 
-void secondary_main(uint64_t idx)
+/* slot (x0 from xentry.S) only picks the stack: find our DT entry by MPIDR */
+void secondary_main(uint64_t slot)
 {
-	wsr("tpidr_el1", 0x100 | idx);
-	if (idx < NR_CPUS) {
+	uint64_t me = rsr("mpidr_el1") & 0xffffff;
+	int idx = -1;
+
+	(void)slot;
+	for (int i = 0; i < x.ncpu; i++)
+		if ((x.cpu[i].reg & 0xffffff) == me)
+			idx = i;
+	wsr("tpidr_el1", 0x100 | (idx & 7));
+	if (idx >= 0) {
 		cpu_read(&x.cpu[idx]);
 		dsb();
 		x.cpu[idx].state = CPU_UP;
 		dsb();
 	}
-	psci_call(PSCI_CPU_OFF, 0, 0, 0);
+	psci_call(x.psci_cpu_off ? x.psci_cpu_off : PSCI_CPU_OFF, 0, 0, 0);
 	for (;;)
 		__asm__ volatile("wfe");
 }
 
-static void probe_cpus(void)
+static void cpu_row(int i);
+
+/*
+ * X1 hung somewhere in here on the G960F (PSCI_VERSION was NOT_SUPPORTED):
+ * each core's row goes on screen before its CPU_ON, so a hang names the call.
+ */
+static void probe_cpus(int row)
 {
 	uint64_t self = rsr("mpidr_el1") & 0xffffff;
+	uint64_t on = x.psci_cpu_on ? x.psci_cpu_on : PSCI_CPU_ON;
 	int found_self = 0;
 
 	for (int i = 0; i < x.ncpu; i++) {
 		struct cpu *c = &x.cpu[i];
+		con_set_row(row + i * CPU_ROW_H);
 		if ((c->reg & 0xffffff) == self) {
 			cpu_read(c);
 			c->state = CPU_SELF;
 			found_self = 1;
+			if (x.fb_src >= 0)
+				cpu_row(i);
 			continue;
 		}
-		c->state = CPU_WAIT;
+		c->state = CPU_CALL;
+		if (x.fb_src >= 0)
+			cpu_row(i);
 		dsb();
-		c->ret = (int64_t)psci_call(PSCI_CPU_ON, c->reg, (uintptr_t)secondary_entry, i);
-		if (c->ret != 0) {
+		c->state = CPU_WAIT;
+		c->ret = (int64_t)psci_call(on, c->reg, (uintptr_t)x_secondary_entry, i);
+		if (c->ret != 0)
 			c->state = CPU_ABSENT;
-			continue;
-		}
 		for (int t = 0; t < 1000 && c->state == CPU_WAIT; t++)
 			delay_ms(1);
+		con_set_row(row + i * CPU_ROW_H);
+		if (x.fb_src >= 0)
+			cpu_row(i);
 	}
 	/* No /cpus in the DT: at least report the boot core. */
 	if (!found_self && x.ncpu < NR_CPUS) {
@@ -428,6 +473,43 @@ static char *put_size(char *p, uint64_t v)
 	if (v >= (1ULL << 20))
 		return put(put_dec(p, v >> 20), "M+");
 	return put(put_dec(p, v >> 10), "K");
+}
+
+/* one fixed-width row per core, so a later state overwrites an earlier one */
+static void cpu_row(int i)
+{
+	struct cpu *c = &x.cpu[i];
+	char label[] = "CPU0", b[80], *p;
+
+	label[3] = '0' + i;
+	p = put_hex(b, c->reg, 3);
+	switch (c->state) {
+	case CPU_UP:
+	case CPU_SELF:
+		p = put_hex(put(p, " "), c->midr, 8);
+		p = put(put(p, " 16K "), (c->mmfr0 >> 20) & 0xf ? "YES" : "NO ");
+		p = put_hex(put(p, " M0 "), c->mmfr0, 8);
+		p = put_dec(put(p, " EL"), c->el);
+		if (c->state == CPU_SELF)
+			p = put(p, " boot");
+		break;
+	case CPU_CALL:
+		p = put(put(put(p, " "), c->enable[0] ? c->enable : "?"), " CPU_ON...");
+		break;
+	case CPU_FAULT:
+		p = put_hex(put(p, " FAULT ESR "), c->esr, 8);
+		p = put_hex(put(p, " ELR "), c->elr, 9);
+		break;
+	case CPU_WAIT:
+		p = put(p, " CPU_ON ok, never arrived");
+		break;
+	default:
+		p = put_hex(put(p, " CPU_ON ret "), (uint64_t)c->ret, 8);
+	}
+	while (p < b + CPU_ROW_COLS)
+		*p++ = ' ';
+	*p = 0;
+	con_str(label, b);
 }
 
 static void bands(void)
@@ -461,7 +543,7 @@ static void draw(int final)
 	char b[96], *p;
 
 	con_clear(GREY);
-	con_title(final ? "EXYNOS X1: OK" : "EXYNOS X1 RUNS");
+	con_title(final ? "EXYNOS X1.1: OK" : "EXYNOS X1.1 RUNS");
 	bands();
 
 	con_str("MODEL", x.model[0] ? x.model : "(no DTB)");
@@ -478,8 +560,12 @@ static void draw(int final)
 	put_size(put(p, " "), x.dtb_size);
 	con_str("WHERE", b);
 	p = put_hex(b, x.psci, 8);
-	put(put(p, " via "), x.psci_method[0] ? x.psci_method : "smc?");
+	p = put(put(p, " via "), x.psci_method[0] ? x.psci_method : "smc?");
+	put(put(p, " "), x.psci_compat[0] ? x.psci_compat : "?");
 	con_str("PSCI", b);
+	p = put_hex(put(b, "CPU_ON "), x.psci_cpu_on, 8);
+	put_hex(put(p, " CPU_OFF "), x.psci_cpu_off, 8);
+	con_str("PSCI ID", x.psci_cpu_on ? b : "no cpu_on in DT: 0.2 IDs");
 	for (int i = 0; i < x.nmem; i++) {
 		p = put_hex(b, x.mem[i].base, 9);
 		put_size(put(p, " "), x.mem[i].size);
@@ -523,39 +609,8 @@ static void draw(int final)
 	if (!final)
 		return;
 
-	for (int i = 0; i < x.ncpu; i++) {
-		struct cpu *c = &x.cpu[i];
-		char label[] = "CPU0";
-		label[3] = '0' + i;
-		p = put_hex(b, c->reg, 3);
-		switch (c->state) {
-		case CPU_UP:
-		case CPU_SELF:
-			p = put_hex(put(p, " MIDR "), c->midr, 8);
-			p = put(put(p, " 16K "), (c->mmfr0 >> 20) & 0xf ? "YES" : "NO");
-			p = put_dec(put(p, " PA"), c->mmfr0 & 0xf);
-			p = put_dec(put(p, " EL"), c->el);
-			if (c->state == CPU_SELF)
-				put(p, " boot");
-			break;
-		case CPU_FAULT:
-			p = put_hex(put(p, " FAULT ESR "), c->esr, 8);
-			put_hex(put(p, " ELR "), c->elr, 9);
-			break;
-		case CPU_WAIT:
-			put(p, " CPU_ON ok, never arrived");
-			break;
-		default:
-			put_hex(put(p, " CPU_ON ret "), (uint64_t)c->ret, 8);
-		}
-		con_str(label, b);
-		if (c->state == CPU_UP || c->state == CPU_SELF) {
-			p = put(put(b, c->compat[0] ? c->compat : "?"), " MMFR0 ");
-			p = put_hex(p, c->mmfr0, 8);
-			put_hex(put(p, " PFR0 "), c->pfr0, 8);
-			con_str("", b);
-		}
-	}
+	for (int i = 0; i < x.ncpu; i++)
+		cpu_row(i);
 	{
 		int v = all_16k();
 		con_str("VERDICT", v > 0 ? "16K on every core: XNU can run" :
@@ -642,7 +697,7 @@ void shim_main(uint64_t dtb)
 	fb.pos_a = 3;
 	if (x.fb_src >= 0) {
 		con_clear(GREY);
-		con_title("EXYNOS X1 RUNS");
+		con_title("EXYNOS X1.1 RUNS");
 		bands();
 	}
 
@@ -657,7 +712,7 @@ void shim_main(uint64_t dtb)
 	x.psci = psci_call(PSCI_VERSION, 0, 0, 0);
 	if (x.fb_src >= 0)
 		draw(0);
-	probe_cpus();
+	probe_cpus(con_row());
 
 	/* 5. Full report, then a counter: if it moves, frames keep reaching the glass. */
 	if (x.fb_src >= 0)

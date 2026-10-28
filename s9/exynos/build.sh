@@ -18,7 +18,7 @@ CFLAGS="-O2 -ffreestanding -nostdlib -fno-pic -mgeneral-regs-only -mstrict-align
 
 STAGE=${1:-x1}
 case $STAGE in
-x1) main="exynos/x1.c" ;;
+x1) main="exynos/x1.c exynos/xentry.S" ;;
 *) echo "usage: exynos/build.sh [x1]" >&2; exit 2 ;;
 esac
 

@@ -95,5 +95,27 @@ readback.
   no second, **Samsung dt_size = 1820672 in the header_version slot** (the DT
   lives inside boot.img even though a DTB partition exists), cmdline
   `androidboot.selinux=permissive`. X1 boot.img sha256 793e44d2...2591 flashed
-  with TWRP dd, readback matched, phone rebooted into it. **Result: waiting for
-  the user's photo / observation.**
+  with TWRP dd, readback matched, phone rebooted into it.
+- **X1 result on the G960F (photo, 2026-10-28):** the shim runs and draws.
+  Observed: title "EXYNOS X1 RUNS" (the pre-CPU screen; the final "X1: OK"
+  screen never appeared, so the CPU probe hung or the photo came first; not
+  yet known if it reset at 90 s). Model "Samsung Star rev26 board based on
+  EXYNOS9810", compatible "Samsung, Star rev26", S-Boot G960FXXUHFVG4,
+  hardware samsungexynos9810, lcdtype 9503811. EL1, CNTFRQ 26000000. Shim at
+  0x80128000, DTB at 0x8A000000 (296K). **PSCI_VERSION = 0xFFFFFFFF
+  (NOT_SUPPORTED) over smc** (DT method "smc"). Memory 0x80000000 968M+,
+  0xC0000000 512M+, 0xE1900000 487M+, 0x880000000 2048M. **GIC: DT
+  interrupt-controller@10100000 arm,cortex-a15-gic, PFR0.GIC = 0: GICv2
+  (GIC-400).** DECON nodes decon_f@0x16030000 and decon_t@0x16050000
+  (samsung,exynos9-decon). **DECON-F trigger 0x3070 -> 0x1281 (second value
+  partly hidden by the crack), and our pixels reached the glass: framebuffer
+  0xCC000000 a8r8g8b8 is right, colours in order.** No reserved region named
+  like a framebuffer (default used). Reserved nodes are named `name@0xADDR`
+  and the base/size column did not match the unit addresses: X1 read them with
+  the root's cells; X1.1 uses reserved-memory's own cells.
+- **X1.1** (built, QEMU ok, not flashed yet): PSCI
+  0.1 function IDs from the DT (`cpu_on`/`cpu_off`) when present; secondaries
+  enter through `xentry.S`, which picks the stack from MPIDR because PSCI 0.1
+  CPU_ON passes no context id (X1 used x0 for that: garbage on 0.1, a likely
+  crash); each core's row is drawn *before* its CPU_ON so a hang names the
+  call; one row per core; PSCI node compatible shown.
