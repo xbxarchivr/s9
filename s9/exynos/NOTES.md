@@ -813,3 +813,10 @@ Chlorophyll (ry-diffusion): Metal on Mesa freedreno for Adreno 630 (iOS 18 arm64
 - Next idea: measure the real A55 clock in-kernel (PMU cycle counter PMCCNTR_EL0 over a fixed mach_absolute_time interval) before and after FREQ_REQ; log raw reply words cmd[0..3].
 - Patch 0111 (xnuw HEAD): measures the A55 clock without the PMU (Samsung EL2 may trap PMU regs): 20000 x 64 dependent adds (1/cycle on A55), interrupts off, best of 3 -> 'SWEET DVFS: A55 measured N MHz' before the request and 'cl0 -> 1794000: now .. kHz, measured N MHz' 20 ms after; logs raw cl0 reply words 'cl0 req R K kHz reply c0 c1 c2 c3'. Not built.
 
+
+## Bold Text crash loop + USERDATA rewrite (2026-10-29)
+
+- User turned on Settings > Accessibility > Bold Text in iOS (boot-ios8); SpringBoard then never came back.
+- Log `s9/logs/boot-ios8-bold.txt` (observed, from the next boot): SpringBoard crash-loops with the same signature every launch: `sig 11 pc 0x0 lr 0x19e6c858c far 0x0` (call through a NULL function pointer), bt 0x19e6c8924 0x19e571884 0x19e533114 0x19e532f10 0x1a8a93760 0x197728780 (dispatch) ...; slide 0x9b90000. PosterBoard (lock screen wallpaper) also crash-loops: `sig 5` (SIGTRAP, Swift/assert trap) pc 0x1cb308268, bt 0x1cb30e304 0x1cb2f4c5c 0x1cb2f4644 0x1cb376204 0x1ad249318 0x1a554372c ...
+- Not symbolicated: `ipsw` (used by tools/spin-sym.py) is not installed in this environment. Guess, NOT verified: the bold-text font/legibility path reaches a GPU/Metal-only routine that is missing without a GPU.
+- Fix chosen by the user: rewrite USERDATA with the clean image F:\ios-s9-ipsw\ios16-root-20H392-s9.img (sha256 0b9c631b...) via write-userdata.py. Avoid Bold Text (and probably other text-legibility settings) until symbolicated.
