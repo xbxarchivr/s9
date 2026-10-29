@@ -841,3 +841,5 @@ Chlorophyll (ry-diffusion): Metal on Mesa freedreno for Adreno 630 (iOS 18 arm64
 ## X1.6: M3 big cores with Samsung's CPUCL1 pmucal_lpm_init writes (built 2026-10-29, NOT flashed)
 
 Implements exynos/M3-POWER.md section 6 A+B in x1.c: before the first /cpus reg 0x1xx CPU_ON, read CLUSTER1_CPU0-3/NONCPU_STATUS (0x14062004/0C/14/1C/44), RESET_SEQUENCER_CONFIGURATION (0x14060500), MAILBOX_APM2AP (0x14100010); then the six RMW writes (0x14061088 top byte 0x8D; 0x14062114/2180/21EC/2258/2384 bits 1:0 = 2), each read back. After all CPU_ONs (+2 s) the status registers are read again. Final screen adds "M3 PMU" (before -> after), "M3 STAT" (before -> after CPU_ONs), "M3 MISC". PMU registers only, reset by the next boot. `out/exynos/boot-x1.img` sha256 429dbe30... Expected if it works: slots 4-7 green, MIDR 0x531F0020, MPIDR 0x800001nn, and the M3's MMFR0 (16K?).
+- X1.6 flashed 2026-10-29 with verified readback (sha256 429dbe30...), rebooted. Result pending (photo). Afterwards restore boot-ios10b.
+
