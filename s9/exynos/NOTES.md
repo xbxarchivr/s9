@@ -857,3 +857,8 @@ Blocker found while planning 0112 (observation from the build files): the SWEET 
 X1.7 = X1.6 + ISAR0/ISAR1 on every core; final screen shows for CPU0 (A55) and CPU4 (M3): raw ISAR0/ISAR1/MMFR1/PFR0 and decoded LSE (ISAR0[23:20], 2 = LSE), PAN (MMFR1[23:20]), RCPC (ISAR1[23:20]), FP (PFR0[19:16], 1 = fp16). PMU/status block cut to one line each. `out/exynos/boot-x1.img` sha256 b56da2e6...
 - X1.7 flashed 2026-10-29 with verified readback, rebooted. Result pending (photo). Afterwards restore boot-ios10b.
 
+- **X1.7 RESULT (photo s9/logs/s9-x1.7-id-regs-2026-10-29.webp, observed):** all 8 cores up again (SLOTS -UUUUUUU).
+  - A55 (CPU0): ISAR0 10211120, ISAR1 00100001, MMFR1 10212122, PFR0 10112222 -> LSE 2, PAN 2, RCPC 1, FP 1 (fp16), DPB 1.
+  - **M3 (CPU4): ISAR0 00011120, ISAR1 00000000, MMFR1 00000000, PFR0 00002222 -> LSE 0, PAN 0, RCPC 0, FP 0 (no fp16), no RDM, no VH, no DPB. Pure ARMv8.0 + crypto/CRC.**
+  - Consequence: the current kernel (-march=armv8.2-a, PAN) cannot run on an M3. iOS 16 userland is built for the A11 (v8.2: LSE atomics, fp16), so user threads on an M3 would likely SIGILL - not verified (would need disassembly of the shared cache).
+  - Options: (A) kernel rebuilt for armv8-a without PAN (or PAN toggled at runtime only on A55s) and M3s used only for bound kernel work, e.g. the sweet.fb.present copy/scale (6-13 ms per frame); (B) trap-and-emulate LSE/fp16 on the M3s (slow, large); (C) leave the M3s off. A is the only one with a clear payoff.
