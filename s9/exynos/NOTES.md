@@ -976,3 +976,4 @@ Research (observed in sources): panel lcdtype 9503811 = 0x910443 = Samsung's `s6
 
 - boot-ios15 (4 GB) flashed 2026-10-29 with verified readback, rebooted into iOS. Result pending.
 
+- **4 GB WORKS (boot-ios15, log s9/logs/boot-ios15.txt, observed):** booted to the lock screen (user); `vm_page_bootstrap: 205359 free pages, 11505 wired pages` = 3.31 GiB managed / 3.13 GiB free (1.3 GB layout, boot-ios12/13: 83030 free + 13162 wired = 1.47 / 1.27 GiB). pmap_startup 300 ms (was 16 ms) for the larger vm_page array. Crashes: driverkitd x1 only (as on every boot). No panic/SError. Not yet checked: hw.memsize as iOS reports it (should be ~3.3 GB), long use touching the high bank.
