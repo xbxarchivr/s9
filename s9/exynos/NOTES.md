@@ -963,3 +963,5 @@ Research (observed in sources): panel lcdtype 9503811 = 0x910443 = Samsung's `s6
 - Same log: battery driver live data `SWEET BATTERY: soc=47.4% vcell=3708mV avg=-223mA now=-685mA rep=1408/2967mAh design=2967mAh cycles=0.86 chgin=0 ...` (unplugged).
 - 2026-10-29: boot-ios14 flashed (verified readback 5f125852...) and USERDATA restored to the ElleKit v3 image via --changed (18 chunks, whole range 6b408b59... = image; Display Zoom off again). Rebooted into iOS. Test pending: screen dimmer at boot (sweetbl=200), brightness slider, 'SWEET BL:' log lines.
 
+- **Brightness WORKS on the Exynos S9 (user, boot-ios14, 2026-10-29): the screen came up dimmer (sweetbl=200 at framebuffer start) and the Control Center brightness slider works.** AOR-only dimming over the DSIM command FIFO + AppleARMBacklight nub (0113). Not yet read from the log: the exact setProperties shape iOS sends (SWEET BL: setProperties ...). Boot images can drop sweetbl (iOS sets the level itself). Remaining requests: RAM 4 GB, audio, Wi-Fi.
+
