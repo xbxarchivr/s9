@@ -1122,3 +1122,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 - **Patch 0128 (written, not built):** the boot-done poll uses only safe reads (abox_sp: value or 0xabababab), runs 10 s (abox.c BOOT_DONE_TIMEOUT_MS) with touch_wait(100), and logs ABOX_CPU_PC, PMU cpu_status, SYSPOWER_STATUS, SRAM +0 / +0x30000, the rx IPC words and SysMMU INT_STATUS/fault addresses.
 - **0128 compiled** (run 40969223321, success): `out/exynos/xnu25/kernel.development.sweet` sha256 7fc5a73b... **Boot image `out/exynos/boot-ios29.img`** (sha256 a054c140...) = boot-ios28 cmdline (sweetaudio=4, Calliope blobs) with the 0128 kernel. Not flashed. Fallback: boot-ios25 / boot-ios15.
 
+- **boot-ios29 flashed** to BOOT (sda10), readback sha256 a054c140... matches. Rebooted. Fallback boot-ios25 / boot-ios15.
+
