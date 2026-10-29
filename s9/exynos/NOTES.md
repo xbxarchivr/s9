@@ -822,3 +822,5 @@ Chlorophyll (ry-diffusion): Metal on Mesa freedreno for Adreno 630 (iOS 18 arm64
 - Fix chosen by the user: rewrite USERDATA with the clean image F:\ios-s9-ipsw\ios16-root-20H392-s9.img (sha256 0b9c631b...) via write-userdata.py. Avoid Bold Text (and probably other text-legibility settings) until symbolicated.
 - USERDATA rewritten 2026-10-29: 64/64 chunks verified, whole range sha256 0b9c631b... = image. Rebooted into iOS with boot-ios8 on BOOT.
 
+- **0111 compiled** (run 40808819701, success): `out/exynos/xnu8/kernel.development.sweet` sha256 aaa5a91d... **Boot image `out/exynos/boot-ios9.img`** (sha256 926504d4...) = boot-ios8 cmdline; adds 'SWEET DVFS: A55 measured N MHz' before/after the cl0 request and raw cl0 reply words. Not flashed.
+
