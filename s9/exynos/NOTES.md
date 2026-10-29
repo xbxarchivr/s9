@@ -807,3 +807,5 @@ Chlorophyll (ry-diffusion): Metal on Mesa freedreno for Adreno 630 (iOS 18 arm64
 - Patch 0110 (xnuw HEAD): DVFS channel = table entry 0 by index (like channel[ch_num]), boot-arg sweetdvfsch=<index> overrides; logs `SWEET DVFS: channel[n] id .. qlen .. esz .. tx f/r .. rx f/r ..`.
 - **0110 compiled** (push 0dd24d4..4c103ec... to xbx, run 40806999625, success): `out/exynos/xnu7/kernel.development.sweet`. **Boot image `out/exynos/boot-ios8.img`** (sha256 948693e0...) = boot-ios7 cmdline (sweetcpufreq=1794000), DVFS now on channel[0]. Not flashed.
 
+- boot-ios8 flashed 2026-10-29 with verified readback, rebooted into iOS. Result pending.
+
