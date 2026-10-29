@@ -1089,3 +1089,7 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 
 - **boot-ios25 flashed** to BOOT (sda10), readback sha256 3f8c5d6c... matches. Rebooted. Fallback boot-ios15.
 
+- **boot-ios25 RESULT (log s9/logs/boot-ios25.txt, observed): booted to iOS, no panic. The ABOX sysreg is NOT TrustZone-locked as a block.** As booted (no SMC, no power cycle): sysreg +0 = 0, +0x104 = 0, +0x300 = 0, **+0x32c MISC_CON = 0 (readable)**; only **+0x204 (the DTZPC word) and +0x328 (L2_CACHE_CON) ABORT**. boot-ios22-24 crashed on the L2_CACHE_CON read (abox.c touches it only with ABOX_QUIRK_BIT_SHARE_VTS_SRAM, so it is not for the 9810 AP); the DTZPC/Q-channel theories were wrong. Steps A/B/C were skipped (probe stops at the first open scan), AUD never power-cycled.
+- **SysMMU_AUD 0x17E00000 readable:** CTRL 0x4 (bit 0 clear = translation off, so ABOX DMA currently sees physical addresses), CFG 0x20000, STATUS 0, VERSION 0x7040000f (SysMMU v7.4).
+- Rule from now on: never touch SYSREG_AUD 0x204/0x328; sweet_probe_rd32 (patch 0124) for any unknown register.
+- Next for audio: ABOX firmware boot (calliope_sram -> SRAM 0x17D00000, DRAM firmware at ABOX IOVA 0x80000000: with the SysMMU off that IOVA is PA 0x80000000, which holds sec_debug/shim/DTB, so either program SysMMU v7 page tables or find another layout), then PMU ABOX CPU enable and IPC.
