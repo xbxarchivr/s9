@@ -273,8 +273,30 @@ static int acpm_init(char *b)
 	return 2;
 }
 
-/* one PMIC register read through the APM: byte, or -1 timeout, -2 no queue space, -(0x100 + status) */
+/*
+ * One MFD request through the APM. cmd1 = FUNC (| args): FUNC_READ 0, or
+ * FUNC_UPDATE 2 | value << 8 | mask << 16. Returns the reply byte, or -1
+ * timeout, -2 no queue space, -(0x100 + status).
+ */
+static int acpm_pmic_req(uint32_t type, uint32_t reg, uint32_t cmd1_req);
+
+/* one PMIC register read through the APM */
 static int acpm_pmic_read(uint32_t type, uint32_t reg)
+{
+	return acpm_pmic_req(type, reg, 0);
+}
+
+/*
+ * X6.7: set only the enable bits (6-7) of an LDO control register, as the
+ * regulator framework does (exynos_acpm_update_reg, mask 0xC0): the
+ * voltage selector is left as it is.
+ */
+static int acpm_ldo_enable(uint32_t reg)
+{
+	return acpm_pmic_req(1, reg, 2u | 0xc0u << 8 | 0xc0u << 16);
+}
+
+static int acpm_pmic_req(uint32_t type, uint32_t reg, uint32_t cmd1_req)
 {
 	uint32_t front = rd32(acpm_tx.front), next = (front + 1) % acpm_tx.len;
 	uint64_t end = xp_now() + xp.cntfrq / 10;	/* 100 ms */
@@ -287,8 +309,9 @@ static int acpm_pmic_read(uint32_t type, uint32_t reg)
 	uint32_t cmd0 = (type & 0xf) << 8 | (reg & 0xff) | acpm_seq << 16;
 	uintptr_t slot = acpm_tx.base + acpm_tx.size * front;
 	wr32(slot, cmd0);
-	for (uint32_t o = 4; o < acpm_tx.size; o += 4)
-		wr32(slot + o, 0);			/* cmd[1] = FUNC_READ (0) */
+	wr32(slot + 4, cmd1_req);
+	for (uint32_t o = 8; o < acpm_tx.size; o += 4)
+		wr32(slot + o, 0);
 	dsb();
 	wr32(acpm_tx.front, next);
 	wr32(ACPM_MBOX + MBOX_INTGR0, (1u << acpm_id) << 16);	/* ring the APM */
@@ -484,7 +507,7 @@ void shim_main(uint64_t dtb)
 	if (!xp.fb_ok)
 		xp_reset();
 	con_clear(GREY);
-	con_title("EXYNOS X6.6 RUNS");
+	con_title("EXYNOS X6.7 RUNS");
 	con_str("MODEL", xp.model[0] ? xp.model : "(no DTB)");
 
 	/* what S-Boot left: pins, IRQ level, and the HSI2C block itself */
@@ -512,6 +535,22 @@ void shim_main(uint64_t dtb)
 		p = put_pmic(b, "l35ctrl", 0x6c);
 		put_pmic(p, "l43ctrl", 0x74);
 		con_str("", b);
+
+		/*
+		 * X6.7: touch power as sec_ts_power(on): tsp_io (LDO35, 0x2C =
+		 * 700 mV + 44 x 25 mV = 1.8 V) on, 1 ms, tsp_avdd (LDO43, 0x30 =
+		 * 1800 mV + 48 x 25 mV = 3.0 V) on, then 70 ms (sec_ts_probe).
+		 */
+		int e35 = acpm_ldo_enable(0x6c);
+		xp_delay_ms(1);
+		int e43 = acpm_ldo_enable(0x74);
+		xp_delay_ms(70);
+		p = put_dec(put(b, "enable l35 rc "), (uint32_t)(e35 < 0 ? -e35 : 0));
+		p = put_dec(put(p, " l43 rc "), (uint32_t)(e43 < 0 ? -e43 : 0));
+		p = put(p, "  now ");
+		p = put_pmic(p, "l35", 0x6c);
+		put_pmic(p, "l43", 0x74);
+		con_str("POWER", b);
 	}
 
 	/* X6.1: select I2C on USI port 3, then the pins */
