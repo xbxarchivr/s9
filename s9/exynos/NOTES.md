@@ -921,3 +921,5 @@ Tools: SystemOS cryptex `F:\ios-s9-ipsw\20H392\087-86593-047.dmg` mounted read-o
   - Reading: injection works; v1's filter (Bundles com.apple.CoreImage) is evaluated by libinjector at process start, before CoreImage is loaded, so S9CISoft was skipped (same as Messages). S9CISoft v2 (UIKit filter + hook on CoreImage load) addresses exactly this. Next: update-tweaks-wsl.sh (user, sudo) + write-userdata.py --changed.
 - update-tweaks-wsl.sh run by the user: ElleKit image now has S9CISoft v2; sha256 **a6e34fed38efbdf5cb7810170f5238cefb480acb5486818b3fbc8d847e9ddb5c** (was 18b1bd55... on USERDATA). Not written to the phone yet.
 
+- USERDATA = S9CISoft v2 ElleKit image (2026-10-29) via `write-userdata.py --changed`: 21 chunks rewritten (1, 3, 4, 18, 27, 47-62; iOS had modified many since the v1 write), 43 identical, whole range sha256 a6e34fed... = image. Rebooted into iOS (boot-ios12). Test pending: Messages, Bold Text; /var/mobile/Library/S9CISoft/log.txt (SpringBoard).
+
