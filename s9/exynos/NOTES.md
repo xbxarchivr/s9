@@ -1102,3 +1102,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 
 - **boot-ios26 flashed** to BOOT (sda10), readback sha256 054da497... matches. Rebooted. Fallback boot-ios25 / boot-ios15.
 
+- **boot-ios26 RESULT:** panicked (user report). The sweetlog on sda25 is unchanged from boot-ios25 (total 150197 bytes, flush #7), so the panic came before the first 10 s log flush of this boot. Suspects: (a) early boot rejecting the payload blobs / /chosen/memory-map entries (Calliope-*), or (b) exy_abox_boot before its first touch_wait (abox_blob, ml_io_map of the 40 MB rmem, safe peeks of rmem 0xfb200000 / GICD 0x17cf1000, which may raise an SError rather than a synchronous abort). Waiting for the panic text (photo).
+
