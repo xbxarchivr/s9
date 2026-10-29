@@ -1024,3 +1024,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 - 0118: probe uses the proven SPI wiring + madera_rd/madera_wr; sweetaudio=2 -> exy_audio_tone(): CLKOUT0 on, poll BOOT_DONE, SYSCLK = MCLK1 declared 24.576 MHz (26 MHz real: +5.8 % pitch), 48 kHz, TONE1 -> OUT3L mix -12 dB, DAC3L -12 dB, OUT3 mono, EP_SEL 0, OUT3L_ENA, 40 ms; logs the registers; plays sweetaudiotone s (default 3), then OUT3L/TONE/SYSCLK off, CLKOUT0 restored, codec back in reset. Not applied: the CS47L92 register patch from madera-core, the FLL, DRE/EDRE.
 - 0118 first CI run 40907515020 FAILED (redefinition of rev: the MAX98512 probe already uses it); renamed to crev. **0118 compiled** (run 40908337260): `out/exynos/xnu15/kernel.development.sweet` sha256 ab6ddd95... **Boot image `out/exynos/boot-ios19.img`** (sha256 98d682bc...) = boot-ios18 cmdline with **sweetaudio=2** (earpiece tone, 3 s, during early boot). Not flashed.
 
+- boot-ios19 (earpiece tone) flashed 2026-10-29 with verified readback, rebooted. Result pending.
+
