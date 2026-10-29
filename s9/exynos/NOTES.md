@@ -797,3 +797,5 @@ Chlorophyll (ry-diffusion): Metal on Mesa freedreno for Adreno 630 (iOS 18 arm64
 
 - **0109 compiled** (push c5c29cc..0dd24d4 to xbx, run 40805355829, success): `out/exynos/xnu6/kernel.development.sweet` sha256 42cda508... **Boot image `out/exynos/boot-ios7.img`** (sha256 f2651ded...) = boot-ios6 cmdline + **sweetcpufreq=1794000**. Not flashed. Expect in the log early: 'SWEET DVFS: mif/int/cl0/cl1/g3d <kHz>' then 'SWEET DVFS: cl0 -> 1794000: now 1794000 kHz'. Fallback: boot-ios6.
 
+- boot-ios7 flashed 2026-10-29 with verified readback (sha256 f2651ded...), rebooted into iOS. Result pending.
+
