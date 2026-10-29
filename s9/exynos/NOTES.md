@@ -1108,3 +1108,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 - **Patch 0126 (written, not built):** abox_rmem is written through 1 MB ml_io_map windows (abox_rm_write, ml_io_unmap after each); the SysMMU table is built in a static 16 KB array and copied; dram[0] read back next to the file's first word.
 - **0126 compiled** (run 40965666652, success; run 40964677851 failed: ml_io_unmap undeclared in BSD, fixed by an extern next to ml_io_map): `out/exynos/xnu23/kernel.development.sweet` sha256 2ce99221... **Boot image `out/exynos/boot-ios27.img`** (sha256 fff9251a...) = boot-ios26 cmdline (sweetaudio=4, Calliope blobs) with the 0126 kernel. Not flashed. Fallback: boot-ios25 / boot-ios15.
 
+- **boot-ios27 flashed** to BOOT (sda10), readback sha256 fff9251a... matches. Rebooted. Fallback boot-ios25 / boot-ios15.
+
