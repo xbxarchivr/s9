@@ -809,3 +809,5 @@ Chlorophyll (ry-diffusion): Metal on Mesa freedreno for Adreno 630 (iOS 18 arm64
 
 - boot-ios8 flashed 2026-10-29 with verified readback, rebooted into iOS. Result pending.
 
+- **boot-ios8 result (observed, s9/logs/boot-ios8.txt):** channel[0] exists (id 0, qlen 15, esz 16, queues idle 0/0) and ANSWERS (no timeouts, unlike channel 5), but every FREQ_GET reply has cmd[1] = 0, and after FREQ_REQ cl0 1794000 the GET still says 0. So it is unknown whether the clock changed. Present stats did improve: avg 6.9-8.4 ms per present, 7-15.6 fps (boot-ios6: 10.5-19.4 ms, 2.2-4.9 fps) - consistent with a faster A55 but not proof (different workload/session).
+- Next idea: measure the real A55 clock in-kernel (PMU cycle counter PMCCNTR_EL0 over a fixed mach_absolute_time interval) before and after FREQ_REQ; log raw reply words cmd[0..3].
