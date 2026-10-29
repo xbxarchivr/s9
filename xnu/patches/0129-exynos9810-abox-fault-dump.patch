@@ -1,0 +1,74 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 5f1d081..b46a2ed 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -1186,6 +1186,58 @@ abox_blob(const char *name, uint32_t *size)
+ 	return (const uint8_t *)ml_static_ptovirt((vm_offset_t)prop[0]);
+ }
+ 
++/*
++ * boot-ios29: Calliope ran (PC 0x2a80 -> 0x2768) and sent IPC_SYSTEM
++ * ABOX_REPORT_FAULT 0xFA, param1 1 (data abort), param3 0x1cd9f0, then
++ * waited. abox.c decodes it: param1 1 data abort, 2 prefetch abort, 3 os
++ * error, 4 vss error, 5 undefined; bundle.param_s32[0] (SRAM 0x30318) is
++ * the Calliope address of a CA7 R0-R14 + PC dump (abox_dbg.c
++ * abox_dbg_print_gpr_from_addr). Addresses below 0x80000000 are SRAM,
++ * 0x80000000.. the DRAM firmware (abox_addr_to_kernel_addr). The live
++ * registers are in the SFR: ABOX_CPU_R(x) 0x2C00 + 4x, PC 0x2C3C,
++ * L2C_STATUS 0x2C40.
++ */
++static void
++abox_fault_dump(vm_offset_t sram, vm_offset_t sfr)
++{
++	static const char *kinds[] = { "?", "data abort", "prefetch abort", "os error",
++		                       "vss error", "undefined exception" };
++	uint32_t p1 = abox_sp(sram + 0x3030c), p2 = abox_sp(sram + 0x30310), p3 = abox_sp(sram + 0x30314);
++	uint32_t gpr = abox_sp(sram + 0x30318);
++	printf("SWEET ABOX: FAULT %s (%#x, %#x, %#x), dump at %#x; bundle %#x %#x %#x\n",
++	    p1 < 6 ? kinds[p1] : "unknown", p1, p2, p3, gpr, abox_sp(sram + 0x3031c),
++	    abox_sp(sram + 0x30320), abox_sp(sram + 0x30324));
++	uint32_t r[16];
++	vm_offset_t win = 0;
++	if (gpr < ABOX_SRAM_SIZE - 64) {
++		for (int i = 0; i < 16; i++) {
++			r[i] = abox_sp(sram + gpr + 4 * i);
++		}
++	} else if (gpr >= 0x80000000u && gpr - 0x80000000u < ABOX_DRAM_FW_SIZE - 64) {
++		uint32_t off = gpr - 0x80000000u, base = off & ~0x3fffu;
++		win = ml_io_map_unmappable(ABOX_RMEM_PA + ABOX_RM_DRAM + base, 0x8000, SWEET_WIMG_IO);
++		for (int i = 0; i < 16; i++) {
++			r[i] = touch_rd(win, off - base + 4 * i);
++		}
++		ml_io_unmap(win, 0x8000);
++	} else {
++		printf("SWEET ABOX: dump address outside SRAM/DRAM firmware\n");
++		gpr = 0;
++	}
++	if (gpr) {
++		for (int i = 0; i < 16; i += 4) {
++			printf("SWEET ABOX: dump R%02d-R%02d %08x %08x %08x %08x%s\n", i, i + 3,
++			    r[i], r[i + 1], r[i + 2], r[i + 3], i == 12 ? " (R15 = PC)" : "");
++		}
++	}
++	for (int i = 0; i < 16; i += 4) {
++		printf("SWEET ABOX: live R%02d-R%02d %08x %08x %08x %08x\n", i, i + 3,
++		    abox_sp(sfr + 0x2c00 + 4 * i), abox_sp(sfr + 0x2c04 + 4 * i),
++		    abox_sp(sfr + 0x2c08 + 4 * i), abox_sp(sfr + 0x2c0c + 4 * i));
++	}
++	printf("SWEET ABOX: live L2C_STATUS %#x\n", abox_sp(sfr + 0x2c40));
++}
++
+ static void
+ exy_abox_boot(void)
+ {
+@@ -1305,6 +1357,10 @@ exy_abox_boot(void)
+ 			printf("SWEET ABOX: BOOT DONE, Calliope version %#x\n", abox_sp(sram + 0x30314));
+ 			return;
+ 		}
++		if (id == 1 && type == 0xfa) {          /* ABOX_REPORT_FAULT */
++			abox_fault_dump(sram, sfr);
++			return;
++		}
+ 		touch_wait(100);
+ 	}
+ 	printf("SWEET ABOX: no boot done after 10 s\n");

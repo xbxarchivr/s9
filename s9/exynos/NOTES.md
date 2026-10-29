@@ -1124,3 +1124,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 
 - **boot-ios29 flashed** to BOOT (sda10), readback sha256 a054c140... matches. Rebooted. Fallback boot-ios25 / boot-ios15.
 
+- **boot-ios29 RESULT (log s9/logs/boot-ios29.txt, observed): booted to iOS; Calliope RUNS.** After ENABLE_CPU: cpu_status 0x1 at once; ABOX_CPU_PC 0x2a80 at t+0, then **0x2768** from t+100 ms to 10 s; SYSPOWER_STATUS 1; SRAM +0 went 0xe59ff018 -> 0x84a4 (firmware rewrote it); SRAM IPC area readable (the boot-ios28 bus error did not recur); SysMMU INT_STATUS 0, AR fault addr 0 (AW reg 0x80 refuses the read). **The firmware sent IPC_SYSTEM msg 0xFA = ABOX_REPORT_FAULT, param1 1 = data abort, param3 0x1cd9f0** (abox_ipc.h / abox.c), not ABOX_BOOT_DONE, then parked at 0x2768.
+- **Patch 0129 (written, not built):** on 0xFA, abox_fault_dump logs param1-3, the bundle words, the CA7 R0-R14+PC dump at bundle.param_s32[0] (SRAM 0x30318; address < 0x80000000 = SRAM, 0x80000000.. = DRAM firmware window) and the live SFR registers ABOX_CPU_R 0x2C00-0x2C3C and L2C_STATUS 0x2C40.
