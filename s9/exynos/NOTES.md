@@ -848,3 +848,5 @@ Implements exynos/M3-POWER.md section 6 A+B in x1.c: before the first /cpus reg 
   - M3 STAT (before writes -> after CPU_ONs): CLUSTER1_CPU0-3_STATUS 00880000 -> 00100F0F, NONCPU 00880000 -> 0010000F (powered).
   - M3 MISC: RESET_SEQUENCER_CONFIGURATION 0, MAILBOX_APM2AP 0.
   - So the six Samsung pmucal_lpm_init CPUCL1 writes are all that was missing. Next: XNU - same writes in SweetCPU before the CPU_ON of reg 0x1xx, ADT cpu nodes for the M3s (psci ids 0x100-0x103, MPIDR 0x800001nn, non-MT), cpus=8; check how the sweet scheduler/topology treats a second cluster (AMP: E = A55, P = M3).
+- boot-ios10b restored on BOOT 2026-10-29 with verified readback, rebooted into iOS.
+
