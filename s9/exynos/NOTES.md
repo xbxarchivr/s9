@@ -820,3 +820,5 @@ Chlorophyll (ry-diffusion): Metal on Mesa freedreno for Adreno 630 (iOS 18 arm64
 - Log `s9/logs/boot-ios8-bold.txt` (observed, from the next boot): SpringBoard crash-loops with the same signature every launch: `sig 11 pc 0x0 lr 0x19e6c858c far 0x0` (call through a NULL function pointer), bt 0x19e6c8924 0x19e571884 0x19e533114 0x19e532f10 0x1a8a93760 0x197728780 (dispatch) ...; slide 0x9b90000. PosterBoard (lock screen wallpaper) also crash-loops: `sig 5` (SIGTRAP, Swift/assert trap) pc 0x1cb308268, bt 0x1cb30e304 0x1cb2f4c5c 0x1cb2f4644 0x1cb376204 0x1ad249318 0x1a554372c ...
 - Not symbolicated: `ipsw` (used by tools/spin-sym.py) is not installed in this environment. Guess, NOT verified: the bold-text font/legibility path reaches a GPU/Metal-only routine that is missing without a GPU.
 - Fix chosen by the user: rewrite USERDATA with the clean image F:\ios-s9-ipsw\ios16-root-20H392-s9.img (sha256 0b9c631b...) via write-userdata.py. Avoid Bold Text (and probably other text-legibility settings) until symbolicated.
+- USERDATA rewritten 2026-10-29: 64/64 chunks verified, whole range sha256 0b9c631b... = image. Rebooted into iOS with boot-ios8 on BOOT.
+
