@@ -1077,3 +1077,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 
 - **Clock path (sources, observed):** CMU_AUD = 0x17C00000 (cmucal-sfr.c SFR_BLOCK(AUD, 0x17c00000, 0x8000)). SYSREG_AUD has no plain gate, only a Q-channel: QCH_CON_SYSREG_AUD_QCH 0x3064 (also SYSMMU_AUD 0x3060, ABOX ACLK 0x3024, GPIO_AUD 0x304C, ABOX BCLK0-3 0x3028-0x3034); fields ENABLE bit 0, CLOCK_REQ bit 1, IGNORE_FORCE_PM_EN bit 2, EXPIRE_VAL [25:16].
 - **Patch 0123 (written):** after the DTZPC restore, read the four Q-channels (flushed line first), then set CLOCK_REQ=1/ENABLE=0 on SYSREG_AUD and SYSMMU_AUD (manual clock on), log, then the flushed sysreg and SysMMU reads.
+- **0123 compiled** (run 40922996377, success): `out/exynos/xnu20/kernel.development.sweet` sha256 fe647c60... **Boot image `out/exynos/boot-ios24.img`** (sha256 c3af3ae2...) = boot-ios23 cmdline (sweetaudio=3) with the 0123 kernel (Q-channel clock request before the sysreg read). Not flashed. Fallback: boot-ios15.
+
