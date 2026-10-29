@@ -833,3 +833,5 @@ Chlorophyll (ry-diffusion): Metal on Mesa freedreno for Adreno 630 (iOS 18 arm64
 - boot-ios10 flashed 2026-10-29 with verified readback, rebooted into iOS. Result pending.
 
 - **boot-ios10 result: GREEN SCREEN (user), no log.** The log area after boot-ios10 is byte-identical to the boot-ios9 dump (sha256 E70D114C...; total 171158, flush #29), so boot-ios10 never reached its first log flush. Only differences from boot-ios9: sweetmiffreq=2093000 and sweetfb_hz=20. Guess (strong, not proven): the MIF FREQ_REQ to 2093000 through ACPM channel[0] broke DRAM/display (stock Linux raises MIF through devfreq with its own sequence; the APM alone may not handle a jump from S-Boot's MIF clock). sweetfb_hz only changes a timer period. Do NOT use sweetmiffreq until understood.
+- **boot-ios10b** (`out/exynos/boot-ios10b.img`, sha256 69ce9778...) = boot-ios9 cmdline + sweetfb_hz=20 only (no sweetmiffreq). Flashed 2026-10-29 with verified readback, rebooted into iOS. Result pending.
+
