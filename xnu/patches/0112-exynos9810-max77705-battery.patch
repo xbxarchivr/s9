@@ -1,0 +1,130 @@
+diff --git a/bsd/dev/sweet_max77705.c b/bsd/dev/sweet_max77705.c
+index 3d04725..8ce9d42 100644
+--- a/bsd/dev/sweet_max77705.c
++++ b/bsd/dev/sweet_max77705.c
+@@ -11,6 +11,13 @@
+  * SMBus style: register byte, repeated START, data; 16-bit registers come
+  * little-endian (low byte first). Every user goes through one lock: the USB
+  * cold start (switch write) and the battery polling.
++ *
++ * Galaxy S9 Exynos 9810 (G960F): same chip on hsi2c@14360000 (USI-v2,
++ * stock DT hsi2c40-bus), pins GPM14-0 (SCL) and GPM15-0 (SDA) of the CMGP
++ * pin controller 0x14220000, banks at 0x180 / 0x1A0 (Linux
++ * pinctrl-exynos.c exynos9810_pin_banks3, bank_type_7: CON +0 4 bits, DAT
++ * +4). Bit-banged like the touch bus: CON 1 = output, DAT 0 = line low;
++ * CON 0 = input, the board's pull-up raises it.
+  */
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ #include <sys/param.h>
+@@ -21,6 +28,7 @@
+ #include <machine/machine_routines.h>
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++extern int sweet_is_exynos(void);
+ 
+ int sweet_max77705_write(uint8_t addr, const uint8_t *buf, unsigned n);
+ int sweet_max77705_read(uint8_t addr, uint8_t reg, uint8_t *buf, unsigned n);
+@@ -30,10 +38,14 @@ int sweet_max77705_read(uint8_t addr, uint8_t reg, uint8_t *buf, unsigned n);
+ #define S9_PIN_SCL              34
+ #define S9_GPIO_OE              (1u << 9)
+ #define S9_HALF_US              5
++#define EXY_CMGP_PA             0x14220000      /* Exynos 9810 pinctrl CMGP */
++#define EXY_GPM14               0x180           /* SCL, pin 0 */
++#define EXY_GPM15               0x1a0           /* SDA, pin 0 */
+ 
+ static LCK_GRP_DECLARE(sweet_max77705_grp, "sweet_max77705");
+ static LCK_MTX_DECLARE(sweet_max77705_lock, &sweet_max77705_grp);
+-static vm_offset_t pm_gpio;
++static vm_offset_t pm_gpio;     /* TLMM GPIO33, or CMGP on Exynos */
++static bool pm_exynos;
+ 
+ static inline uint32_t
+ pm_rd(vm_offset_t a)
+@@ -48,29 +60,44 @@ pm_wr(vm_offset_t a, uint32_t v)
+ 	__asm__ volatile ("dsb sy" ::: "memory");
+ }
+ 
++/* the pin's config register: TLMM CFG, or the Exynos bank's CON */
+ static vm_offset_t
+ pm_pin(unsigned pin)
+ {
++	if (pm_exynos) {
++		return pm_gpio + (pin == S9_PIN_SCL ? EXY_GPM14 : EXY_GPM15);
++	}
+ 	return pm_gpio + (pin - S9_PIN_SDA) * 0x1000;
+ }
+ 
+ static unsigned
+ pm_level(unsigned pin)
+ {
+-	return pm_rd(pm_pin(pin) + 4) & 1;
++	return pm_rd(pm_pin(pin) + 4) & 1;      /* TLMM IN_OUT bit 0, Exynos DAT bit 0 */
++}
++
++/* open drain: drive low, or release to the pull-up */
++static void
++pm_drive(unsigned pin, bool high)
++{
++	if (pm_exynos) {
++		pm_wr(pm_pin(pin), high ? 0 : 1);
++	} else {
++		pm_wr(pm_pin(pin), high ? 0 : S9_GPIO_OE);
++	}
+ }
+ 
+ static void
+ pm_line(unsigned pin, bool high)
+ {
+-	pm_wr(pm_pin(pin), high ? 0 : S9_GPIO_OE);
++	pm_drive(pin, high);
+ 	delay(S9_HALF_US);
+ }
+ 
+ static bool
+ pm_scl_high(void)
+ {
+-	pm_wr(pm_pin(S9_PIN_SCL), 0);
++	pm_drive(S9_PIN_SCL, true);
+ 	for (unsigned i = 0; !pm_level(S9_PIN_SCL); i++) {      /* clock stretching */
+ 		if (i > 10000) {
+ 			return false;
+@@ -150,6 +177,24 @@ pm_bus_ready(void)
+ 	if (pm_gpio != 0) {
+ 		return 0;
+ 	}
++	if (sweet_is_exynos()) {
++		pm_gpio = ml_io_map(EXY_CMGP_PA, PAGE_SIZE);
++		if (pm_gpio == 0) {
++			return ENOMEM;
++		}
++		pm_exynos = true;
++		printf("SWEET MAX77705: Exynos CMGP gpm14/gpm15 CON %#x/%#x DAT %#x/%#x PUD %#x/%#x\n",
++		    pm_rd(pm_gpio + EXY_GPM14), pm_rd(pm_gpio + EXY_GPM15),
++		    pm_rd(pm_gpio + EXY_GPM14 + 4), pm_rd(pm_gpio + EXY_GPM15 + 4),
++		    pm_rd(pm_gpio + EXY_GPM14 + 8), pm_rd(pm_gpio + EXY_GPM15 + 8));
++		pm_wr(pm_pin(S9_PIN_SDA) + 4, 0);       /* DAT latch 0 */
++		pm_wr(pm_pin(S9_PIN_SCL) + 4, 0);
++		pm_wr(pm_pin(S9_PIN_SDA), 0);           /* CON: input, released */
++		pm_wr(pm_pin(S9_PIN_SCL), 0);
++		delay(20);
++		printf("SWEET MAX77705: lines sda=%u scl=%u\n", pm_level(S9_PIN_SDA), pm_level(S9_PIN_SCL));
++		return 0;
++	}
+ 	pm_gpio = ml_io_map(S9_TLMM_GPIO33_PA, 0x2000);
+ 	if (pm_gpio == 0) {
+ 		return ENOMEM;
+diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
+index 0712710..6e03e29 100644
+--- a/iokit/Kernel/arm/SweetBattery.cpp
++++ b/iokit/Kernel/arm/SweetBattery.cpp
+@@ -629,8 +629,8 @@ SweetBattery::start(IOService *provider)
+ 	/* Galaxy S9: the MAX77705 gauge unless sweetbattery=0 (static) or 1 (PM6150, the Redmi). */
+ 	int real = 2;
+ 	(void)PE_parse_boot_argn("sweetbattery", &real, sizeof(real));
+-	if (sweet_is_exynos()) {
+-		real = 0;	/* MAX77705 sits behind Qualcomm TLMM bit-banging here */
++	if (sweet_is_exynos() && real == 1) {
++		real = 0;	/* no PM6150 on Exynos; the MAX77705 (2) is bit-banged on CMGP */
+ 	}
+ 	if (real == 2) {
+ 		uint16_t status;
