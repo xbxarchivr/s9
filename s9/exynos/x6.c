@@ -1,0 +1,344 @@
+/*
+ * Galaxy S9 Exynos milestone X6: touchscreen probe. CPU0 only, MMU off.
+ *
+ * The G960F's touch controller is a Samsung LSI S6SY761 ("sec,sec_ts",
+ * firmware tsp_sec/y761_star1.fw) at I2C address 0x48 on the USI-v2 HSI2C
+ * at 0x104B0000 (stock rev26 DT; pins GPG3-3/4 function 2 in PERIC1
+ * pinctrl 0x10830000 + 0xC0), attention IRQ on GPA1-0 (ALIVE 0x14050040,
+ * active low), supplies S2MPS18 LDO35 tsp_io 1.8 V and LDO43 tsp_avdd
+ * 3.0 V, both regulator-boot-on. This stage finds out what S-Boot leaves
+ * on: it reads the HSI2C block (a gated clock would fault: SHIM PANIC with
+ * FAR), sets the pins, programs the controller as i2c-exynos5.c does in
+ * polling mode, talks to the chip (sec_ts.c: event 0x60, ID 0x52, boot
+ * status 0x55, device ID 0x22, SENSE_ON 0x10) and then shows live touch
+ * coordinates for 60 s. Writes go only to the HSI2C/pinctrl registers and
+ * to the touch chip's command interface.
+ */
+#include <stdint.h>
+#include "hw.h"
+#include "fb.h"
+#include "con.h"
+#include "xplat.h"
+
+#define RUN_SECONDS	60
+
+#define HSI2C		0x104B0000UL
+#define PERIC1_GPG3	0x108300C0UL	/* CON +0, DAT +4, PUD +8 */
+#define ALIVE_GPA1	0x14050040UL
+#define TS_ADDR		0x48
+
+/* i2c-exynos5.c */
+#define CTL		0x00
+#define FIFO_CTL	0x04
+#define TRAILIG_CTL	0x08
+#define INT_ENABLE	0x20
+#define INT_STATUS	0x24
+#define FIFO_STATUS	0x30
+#define TX_DATA		0x34
+#define RX_DATA		0x38
+#define CONF		0x40
+#define AUTO_CONF	0x44
+#define TIMEOUT		0x48
+#define TRANS_STATUS	0x50
+#define TIMING_FS1	0x60
+#define TIMING_FS2	0x64
+#define TIMING_FS3	0x68
+#define ADDR		0x70
+#define USI_CON		0xC4
+
+#define CTL_MASTER	(1u << 3)
+#define CTL_RXCHON	(1u << 6)
+#define CTL_TXCHON	(1u << 7)
+#define CTL_SW_RST	(1u << 31)
+#define CONF_AUTO_MODE	(1u << 31)
+#define AUTO_READ	(1u << 16)
+#define AUTO_STOP	(1u << 17)
+#define AUTO_RUN	(1u << 31)
+#define INT_XFER_DONE	(1u << 7)
+#define INT_NODEV	(1u << 10)
+#define FIFO_RX_EMPTY	(1u << 24)
+#define FIFO_TX_EMPTY	(1u << 8)
+#define TS_NO_DEV_ACK	(1u << 2)
+#define TS_NO_DEV	(1u << 3)
+
+/* sec_ts.h */
+#define SEC_TS_CMD_SENSE_ON		0x10
+#define SEC_TS_READ_DEVICE_ID		0x22
+#define SEC_TS_READ_ID			0x52
+#define SEC_TS_READ_BOOT_STATUS		0x55
+#define SEC_TS_READ_ONE_EVENT		0x60
+#define SEC_TS_CMD_CLEAR_EVENT_STACK	0x62
+
+#define wsr(r, v) __asm__ volatile("msr " r ", %0" : : "r"((uint64_t)(v)))
+
+static volatile int in_exc;
+static uint32_t last_int, last_trans;
+
+static inline uint32_t hr(uint32_t o) { return rd32(HSI2C + o); }
+static inline void hw(uint32_t o, uint32_t v) { wr32(HSI2C + o, v); }
+
+static void udelay(unsigned us)
+{
+	uint64_t end = xp_now() + xp.cntfrq / 1000000 * us;
+	while (xp_now() < end)
+		;
+}
+
+/*
+ * exynos5_i2c_set_timing(FAST) for op_clk, assuming the 200 MHz ipclk the
+ * DT asks for (default-clk). If S-Boot left a slower source the bus is just
+ * slower, which is fine for a probe.
+ */
+static void hsi2c_timing(uint32_t ipclk, uint32_t op_clk)
+{
+	uint32_t div = (ipclk / (op_clk * 15)) & 0xff;
+	hw(TIMING_FS3, (hr(TIMING_FS3) & ~0x00ff0000u) | div << 16);
+	uint32_t h = (9 * (ipclk / 1000000)) / ((div + 1) * 10);
+	if (h > 7)
+		h = 7;
+	h = (0xffffffffu >> h << h) & 0xff;
+	hw(TIMING_FS2, (hr(TIMING_FS2) & ~0xffu) | h);
+	uint32_t s = (9 * (ipclk / 1000000)) / ((div + 1) * 10) - 1;
+	if (s > 7)
+		s = 7;
+	s = (0xffffffffu >> s << s) & 0xff;
+	hw(TIMING_FS1, (hr(TIMING_FS1) & ~0x00ff0000u) | s << 16);
+}
+
+static void hsi2c_reset(void)
+{
+	hw(USI_CON, 0);				/* exynos_usi_init: release USI reset */
+	hw(CTL, hr(CTL) | CTL_SW_RST);
+	hw(CTL, hr(CTL) & ~CTL_SW_RST);
+	hsi2c_timing(200000000, 100000);	/* 100 kHz: slow and safe */
+	hw(CTL, CTL_MASTER);
+	hw(TRAILIG_CTL, 0xffffff);
+	hw(CONF, hr(CONF) | CONF_AUTO_MODE);
+}
+
+/*
+ * One polled message as exynos5_i2c_xfer_msg (HSI2C_POLLING) with stop
+ * after it (samsung,stop-after-trans). Returns 0 or a nonzero code.
+ */
+static int hsi2c_msg(uint8_t addr, int rd, uint8_t *buf, unsigned len)
+{
+	uint32_t ctl = hr(CTL), auto_conf = hr(AUTO_CONF);
+	unsigned n = 0;
+
+	hw(TIMEOUT, hr(TIMEOUT) & ~(1u << 31));
+	hw(FIFO_CTL, 3u | (len & 0x7f) << 4 | (len & 0x7f) << 16);	/* RX/TX FIFO en, triggers */
+	if (rd) {
+		ctl = (ctl & ~CTL_TXCHON) | CTL_RXCHON;
+		auto_conf |= AUTO_READ;
+	} else {
+		ctl = (ctl & ~CTL_RXCHON) | CTL_TXCHON;
+		auto_conf &= ~AUTO_READ;
+	}
+	auto_conf |= AUTO_STOP;
+	hw(ADDR, (hr(ADDR) & ~((0x3ffu << 10) | 0x3ffu | (0xffu << 24))) | (uint32_t)(addr & 0x7f) << 10);
+	hw(CTL, ctl);
+	hw(INT_STATUS, hr(INT_STATUS));
+	hw(INT_ENABLE, INT_XFER_DONE);
+	hw(AUTO_CONF, (auto_conf & ~0xffffu) | len);
+	hw(AUTO_CONF, hr(AUTO_CONF) | AUTO_RUN);
+
+	uint64_t end = xp_now() + xp.cntfrq / 20;	/* 50 ms */
+	if (rd) {
+		while (n < len && xp_now() < end)
+			if (!(hr(FIFO_STATUS) & FIFO_RX_EMPTY))
+				buf[n++] = (uint8_t)hr(RX_DATA);
+	} else {
+		while (n < len && xp_now() < end)
+			if ((hr(FIFO_STATUS) & 0x7f) < 64)
+				hw(TX_DATA, buf[n++]);
+	}
+	int done = 0;
+	while (xp_now() < end) {
+		uint32_t is = hr(INT_STATUS);
+		if ((is & INT_XFER_DONE) && (rd || (hr(FIFO_STATUS) & FIFO_TX_EMPTY))) {
+			done = 1;
+			break;
+		}
+		if (is & INT_NODEV)
+			break;
+	}
+	last_int = hr(INT_STATUS);
+	last_trans = hr(TRANS_STATUS);
+	hw(INT_STATUS, last_int);
+	if (last_trans & (TS_NO_DEV | TS_NO_DEV_ACK) || last_int & INT_NODEV) {
+		hsi2c_reset();
+		return 3;			/* no ACK: no device / unpowered */
+	}
+	if (n < len || !done) {
+		hsi2c_reset();
+		return 2;			/* timeout */
+	}
+	return 0;
+}
+
+static int ts_read(uint8_t reg, uint8_t *buf, unsigned len)
+{
+	int r = hsi2c_msg(TS_ADDR, 0, &reg, 1);
+	return r ? r : hsi2c_msg(TS_ADDR, 1, buf, len);
+}
+
+static int ts_cmd(uint8_t cmd)
+{
+	return hsi2c_msg(TS_ADDR, 0, &cmd, 1);
+}
+
+static char *put_bytes(char *p, const uint8_t *b, unsigned n)
+{
+	for (unsigned i = 0; i < n; i++) {
+		p = put_hex(p, b[i], 2);
+		*p++ = ' ';
+	}
+	*p = 0;
+	return p;
+}
+
+static char *put_rc(char *p, const char *what, int r)
+{
+	p = put(p, what);
+	p = put_dec(put(p, " rc "), r);
+	p = put_hex(put(p, " is "), last_int, 8);
+	return put(put_hex(put(p, " ts "), last_trans, 8), " ");
+}
+
+void exc_handler(uint64_t slot, uint64_t *regs)
+{
+	char b[48];
+
+	if (in_exc++ || !xp.fb_ok)
+		xp_reset();
+	con_clear(PANICBG);
+	con_title("SHIM PANIC");
+	put_dec(put(b, "slot "), slot);
+	con_str("EXC", b);
+	con_hex("ESR", rsr("esr_el1"));
+	con_hex("ELR", rsr("elr_el1"));
+	con_hex("FAR", rsr("far_el1"));
+	con_hex("LR", regs[31]);
+	xp_delay_ms(60000);
+	xp_reset();
+}
+
+void shim_main(uint64_t dtb)
+{
+	char b[128], *p;
+	uint8_t d[8];
+	int r;
+
+	wsr("tpidr_el1", 0);
+	xp_init(dtb);
+	if (!xp.fb_ok)
+		xp_reset();
+	con_clear(GREY);
+	con_title("EXYNOS X6 RUNS");
+	con_str("MODEL", xp.model[0] ? xp.model : "(no DTB)");
+
+	/* what S-Boot left: pins, IRQ level, and the HSI2C block itself */
+	p = put_hex(put(b, "gpg3 con "), rd32(PERIC1_GPG3), 8);
+	p = put_hex(put(p, " pud "), rd32(PERIC1_GPG3 + 8), 8);
+	p = put_hex(put(p, "  gpa1 con "), rd32(ALIVE_GPA1), 8);
+	put_hex(put(p, " dat "), rd32(ALIVE_GPA1 + 4), 2);
+	con_str("PINS", b);
+	p = put_hex(put(b, "ctl "), hr(CTL), 8);
+	p = put_hex(put(p, " conf "), hr(CONF), 8);
+	p = put_hex(put(p, " usi "), hr(USI_CON), 8);
+	p = put_hex(put(p, " fifo "), hr(FIFO_STATUS), 8);
+	put_hex(put(p, " trans "), hr(TRANS_STATUS), 8);
+	con_str("HSI2C", b);
+
+	/* GPG3-3/4 -> function 2 (hsi2c26-bus) */
+	uint32_t con = rd32(PERIC1_GPG3);
+	con = (con & ~(0xffu << 12)) | 0x22u << 12;
+	wr32(PERIC1_GPG3, con);
+	hsi2c_reset();
+	p = put_hex(put(b, "gpg3 con "), rd32(PERIC1_GPG3), 8);
+	p = put_hex(put(p, " ctl "), hr(CTL), 8);
+	p = put_hex(put(p, " conf "), hr(CONF), 8);
+	put_hex(put(p, " fs3 "), hr(TIMING_FS3), 8);
+	con_str("SETUP", b);
+	con_skip();
+
+	/* the chip: pending event (boot status), IDs */
+	for (int i = 0; i < 3; i++) {
+		r = ts_read(SEC_TS_READ_ONE_EVENT, d, 8);
+		put_bytes(put_rc(b, "event", r), d, r ? 0 : 8);
+		con_str(i ? "" : "EVENT", b);
+		if (r)
+			break;
+	}
+	r = ts_read(SEC_TS_READ_ID, d, 3);
+	put_bytes(put_rc(b, "id", r), d, r ? 0 : 3);
+	con_str("ID", b);
+	r = ts_read(SEC_TS_READ_BOOT_STATUS, d, 1);
+	put_bytes(put_rc(b, "boot", r), d, r ? 0 : 1);
+	con_str("BOOT", b);
+	r = ts_read(SEC_TS_READ_DEVICE_ID, d, 5);
+	put_bytes(put_rc(b, "devid", r), d, r ? 0 : 5);
+	con_str("DEVID", b);
+	r = ts_cmd(SEC_TS_CMD_CLEAR_EVENT_STACK);
+	if (!r) {
+		xp_delay_ms(10);
+		r = ts_cmd(SEC_TS_CMD_SENSE_ON);
+	}
+	put_rc(b, "clear+sense_on", r);
+	con_str("SENSE", b);
+	con_skip();
+	con_str("", "Touch the screen: last events below, 60 s.");
+	int ev_y = con_row();
+	con_skip();
+	con_skip();
+	con_skip();
+	con_skip();
+	con_skip();
+	con_skip();
+
+	int y = con_row();
+	unsigned events = 0, touches = 0, row = 0;
+	uint64_t t0 = xp_now();
+	for (unsigned s = 0; s <= RUN_SECONDS;) {
+		if (!(rd32(ALIVE_GPA1 + 4) & 1)) {	/* attention: active low */
+			r = ts_read(SEC_TS_READ_ONE_EVENT, d, 8);
+			events++;
+			if (!r) {
+				unsigned eid = d[0] & 3, tid = d[0] >> 2 & 0xf, st = d[0] >> 6;
+				p = b;
+				if (eid == 0) {
+					unsigned x = (unsigned)d[1] << 4 | d[3] >> 4;
+					unsigned yy = (unsigned)d[2] << 4 | (d[3] & 0xf);
+					touches++;
+					p = put_dec(put(p, "touch id "), tid);
+					p = put_dec(put(p, " st "), st);
+					p = put_dec(put(p, " x "), x);
+					p = put_dec(put(p, " y "), yy);
+					p = put_dec(put(p, " left "), d[7] & 0x3f);
+				} else {
+					p = put_dec(put(p, "event eid "), eid);
+					p = put(p, "  ");
+					put_bytes(p, d, 8);
+				}
+			} else {
+				put_rc(b, "read", r);
+			}
+			con_set_row(ev_y + row);
+			con_str("", "                                                            ");
+			con_set_row(ev_y + row);
+			con_str("", b);
+			row = (row + 1) % 6;
+		}
+		if (xp_now() - t0 >= xp.cntfrq * s) {
+			p = put(put_dec(b, s), "s  events ");
+			p = put_dec(p, events);
+			p = put_dec(put(p, " touches "), touches);
+			put_hex(put(p, " irq "), rd32(ALIVE_GPA1 + 4) & 1, 1);
+			con_set_row(y);
+			con_str("TIME", b);
+			s++;
+		}
+		udelay(500);
+	}
+	xp_reset();
+}
