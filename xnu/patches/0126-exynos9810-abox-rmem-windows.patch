@@ -1,0 +1,97 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 40a0222..96f9734 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -1139,6 +1139,24 @@ abox_copy(vm_offset_t dst, const uint8_t *src, uint32_t len, uint32_t total)
+ 	__asm__ volatile("dsb sy" ::: "memory");
+ }
+ 
++/*
++ * abox_rmem through 1 MB windows: boot-ios26 panicked mapping all 40 MB at
++ * once (kmem_alloc(..., 41943040, ...) failed with 3 in io_map). Copies len
++ * bytes of src (or nothing) to rmem + off and zero-fills up to total.
++ */
++#define ABOX_RM_WIN      0x100000u
++static void
++abox_rm_write(uint32_t off, const uint8_t *src, uint32_t len, uint32_t total)
++{
++	for (uint32_t w = 0; w < total; w += ABOX_RM_WIN) {
++		uint32_t n = total - w < ABOX_RM_WIN ? total - w : ABOX_RM_WIN;
++		uint32_t have = len > w ? (len - w < n ? len - w : n) : 0;
++		vm_offset_t va = ml_io_map(ABOX_RMEM_PA + off + w, ABOX_RM_WIN);
++		abox_copy(va, have ? src + w : NULL, have, n);
++		ml_io_unmap(va, ABOX_RM_WIN);
++	}
++}
++
+ static const uint8_t *
+ abox_blob(const char *name, uint32_t *size)
+ {
+@@ -1172,14 +1190,16 @@ exy_abox_boot(void)
+ 	vm_offset_t sfr = ml_io_map(0x17c50000, 0x4000), sys = ml_io_map(0x17c10000, PAGE_SIZE);
+ 	vm_offset_t mmu = ml_io_map(0x17e00000, PAGE_SIZE), cmu = ml_io_map(0x17c00000, 0x4000);
+ 	vm_offset_t gic = ml_io_map(0x17cf0000, 0x4000), sram = ml_io_map(0x17d00000, ABOX_SRAM_SIZE);
+-	vm_offset_t rm = ml_io_map(ABOX_RMEM_PA, ABOX_RMEM_SIZE);
+-	if (!pmu || !sfr || !sys || !mmu || !cmu || !gic || !sram || !rm) {
++	if (!pmu || !sfr || !sys || !mmu || !cmu || !gic || !sram) {
+ 		printf("SWEET ABOX: mappings failed\n");
+ 		return;
+ 	}
+ 	uint32_t v;
++	vm_offset_t rm = ml_io_map(ABOX_RMEM_PA, ABOX_RM_WIN);
++	bool rm_ok = abox_peek("rmem", rm, ABOX_RMEM_PA);
++	ml_io_unmap(rm, ABOX_RM_WIN);
+ 	/* every block is read once through the bus-error-safe path first */
+-	if (!abox_peek("rmem", rm, ABOX_RMEM_PA) || !abox_peek("gicd", gic + 0x1000, 0x17cf1000) ||
++	if (!rm_ok || !abox_peek("gicd", gic + 0x1000, 0x17cf1000) ||
+ 	    !abox_peek("sram", sram, 0x17d00000) || !abox_peek("sysmmu", mmu, 0x17e00000) ||
+ 	    !abox_peek("misc_con", sys + 0x32c, 0x17c1032c)) {
+ 		printf("SWEET ABOX: a block refuses the AP, not booting\n");
+@@ -1194,8 +1214,7 @@ exy_abox_boot(void)
+ 	/* SysMMU page table and translation */
+ 	printf("SWEET ABOX: writing firmware and the SysMMU table...\n");
+ 	touch_wait(11000);         /* past one 10 s log flush */
+-	vm_offset_t pt = rm + ABOX_RM_PGTABLE;
+-	abox_copy(pt, NULL, 0, 0x4000);
++	static uint32_t pt[4096];          /* level-1 table, built here, copied to rmem */
+ 	static const struct { uint32_t iova, off, mb; } map[] = {
+ 		{ 0x80000000u, ABOX_RM_DRAM, 18 }, { 0x90000000u, ABOX_RM_IVA, 1 },
+ 		{ 0x91000000u, ABOX_RM_RDMA, 8 }, { 0xa0000000u, ABOX_RM_VSS, 6 },
+@@ -1204,12 +1223,13 @@ exy_abox_boot(void)
+ 	for (unsigned i = 0; i < sizeof(map) / sizeof(map[0]); i++) {
+ 		for (uint32_t m = 0; m < map[i].mb; m++) {
+ 			uint32_t pa = ABOX_RMEM_PA + map[i].off + (m << 20);
+-			touch_wr(pt, ((map[i].iova >> 20) + m) * 4, (pa >> 4) | 2);
++			pt[(map[i].iova >> 20) + m] = (pa >> 4) | 2;
+ 		}
+ 	}
+-	touch_wr(pt, (0x10000000u >> 20) * 4, (0x10000000u >> 4) | 2);
+-	abox_copy(rm + ABOX_RM_VSS, NULL, 0, 7u << 20);           /* VSS + parameter */
+-	abox_copy(rm + ABOX_RM_RDMA, NULL, 0, 8u << 20);
++	pt[0x10000000u >> 20] = (0x10000000u >> 4) | 2;
++	abox_rm_write(ABOX_RM_PGTABLE, (const uint8_t *)pt, sizeof(pt), sizeof(pt));
++	abox_rm_write(ABOX_RM_VSS, NULL, 0, 7u << 20);            /* VSS + parameter */
++	abox_rm_write(ABOX_RM_RDMA, NULL, 0, 8u << 20);
+ 
+ 	/* abox_enable(): sysreg, GIC, firmware, DRAM on, CPU power, pads */
+ 	touch_wr(mmu, 0x0, 0x7);                                 /* CTRL_BLOCK */
+@@ -1229,12 +1249,15 @@ exy_abox_boot(void)
+ 	touch_wr(gic, 0x2000, 0x3);
+ 
+ 	abox_copy(sram, fw_sram, sram_len, ABOX_SRAM_SIZE);
+-	abox_copy(rm + ABOX_RM_DRAM, fw_dram, dram_len, ABOX_DRAM_FW_SIZE);
++	abox_rm_write(ABOX_RM_DRAM, fw_dram, dram_len, ABOX_DRAM_FW_SIZE);
+ 	if (fw_iva) {
+-		abox_copy(rm + ABOX_RM_IVA, fw_iva, iva_len, ABOX_IVA_FW_SIZE);
++		abox_rm_write(ABOX_RM_IVA, fw_iva, iva_len, ABOX_IVA_FW_SIZE);
+ 	}
+-	v = touch_rd(sram, 0);
+-	printf("SWEET ABOX: firmware written (sram[0] %#x, dram[0] %#x)\n", v, touch_rd(rm + ABOX_RM_DRAM, 0));
++	rm = ml_io_map(ABOX_RMEM_PA + ABOX_RM_DRAM, ABOX_RM_WIN);
++	v = touch_rd(rm, 0);
++	ml_io_unmap(rm, ABOX_RM_WIN);
++	printf("SWEET ABOX: firmware written (sram[0] %#x, dram[0] %#x, file %#x)\n", touch_rd(sram, 0), v,
++	    (uint32_t)fw_dram[0] | (uint32_t)fw_dram[1] << 8 | (uint32_t)fw_dram[2] << 16 | (uint32_t)fw_dram[3] << 24);
+ 
+ 	touch_wr(sfr, 0x10, 1);                                  /* SYSPOWER_CTRL: DRAM on */
+ 	touch_wr(pmu, 0x415c, touch_rd(pmu, 0x415c) | 1);        /* ABOX_CPU_LOCAL_PWR_CFG */
