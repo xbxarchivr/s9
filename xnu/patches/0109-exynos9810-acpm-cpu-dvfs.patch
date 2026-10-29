@@ -1,0 +1,282 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index aff065c..4e0e789 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -107,7 +107,7 @@ static const struct touch_bus exy_ts_bus = {EXY_TS_SDA, EXY_TS_SCL};
+ 
+ static struct {
+ 	vm_offset_t gpio;
+-	bool started, probing;
++	bool started, probing, enabled;
+ 	uint32_t active;
+ 	int x[TOUCH_MAX], y[TOUCH_MAX];
+ 	bool exynos;
+@@ -392,19 +392,18 @@ out:
+ }
+ 
+ /*
+- * Exynos: one PMIC request through the APM firmware (ACPM IPC, polled), as
+- * acpm_ipc_send_data + check_response with acpm_mfd's encoding: cmd[0] =
+- * seq << 16 | type << 8 | reg, cmd[1] = func (READ 0, UPDATE 2 | val << 8 |
+- * mask << 16); reply cmd[1]: byte bits 8-15, status bits 24-31. Returns the
+- * byte, or -1 (no channel / timeout) or -(0x100 + status).
++ * Exynos: requests to the APM firmware (ACPM IPC, polled), as
++ * acpm_ipc_send_data + check_response: 4 words, the sequence number in
++ * cmd[0] bits 16-21, the reply comes back in the same slot format.
+  */
+-static struct {
++struct acpm_ch {
+ 	vm_offset_t tx_rear, tx_front, tx_base, rx_rear, rx_front, rx_base;
+ 	uint32_t len, size, id, seq;
+-} acpm;
++};
++static struct acpm_ch acpm_mfd, acpm_dvfs;
+ 
+ static bool
+-exy_acpm_init(void)
++exy_acpm_init(struct acpm_ch *ch, uint32_t id)
+ {
+ 	vm_offset_t init = st.sram + EXY_ACPM_INITDATA;
+ 	uint32_t tbl = touch_rd(init, 0x08), apmax = touch_rd(init, 0x18);
+@@ -414,82 +413,151 @@ exy_acpm_init(void)
+ 	}
+ 	for (uint32_t i = 0; i < apmax; i++) {
+ 		vm_offset_t e = st.sram + tbl + 72 * i;         /* struct ipc_channel */
+-		if (touch_rd(e, 0) != EXY_ACPM_MFD_CH) {
++		if (touch_rd(e, 0) != id) {
+ 			continue;
+ 		}
+-		acpm.id = EXY_ACPM_MFD_CH;
+-		acpm.tx_rear = st.sram + touch_rd(e, 16);       /* AP sends on ch.rx_* */
+-		acpm.tx_front = st.sram + touch_rd(e, 20);
+-		acpm.tx_base = st.sram + touch_rd(e, 24);
+-		acpm.rx_rear = st.sram + touch_rd(e, 40);       /* and receives on ch.tx_* */
+-		acpm.rx_front = st.sram + touch_rd(e, 44);
+-		acpm.rx_base = st.sram + touch_rd(e, 48);
+-		acpm.len = touch_rd(e, 52);
+-		acpm.size = touch_rd(e, 56);
+-		return acpm.len && acpm.size >= 8 && acpm.size <= 64;
+-	}
+-	printf("SWEET TOUCH: no ACPM channel %u\n", EXY_ACPM_MFD_CH);
++		ch->id = id;
++		ch->tx_rear = st.sram + touch_rd(e, 16);        /* AP sends on ch.rx_* */
++		ch->tx_front = st.sram + touch_rd(e, 20);
++		ch->tx_base = st.sram + touch_rd(e, 24);
++		ch->rx_rear = st.sram + touch_rd(e, 40);        /* and receives on ch.tx_* */
++		ch->rx_front = st.sram + touch_rd(e, 44);
++		ch->rx_base = st.sram + touch_rd(e, 48);
++		ch->len = touch_rd(e, 52);
++		ch->size = touch_rd(e, 56);
++		return ch->len && ch->size >= 8 && ch->size <= 64;
++	}
++	printf("SWEET TOUCH: no ACPM channel %u\n", id);
+ 	return false;
+ }
+ 
++/* Send cmd[0..3], wait for the reply into cmd[]. 0, or -1 on a timeout. */
+ static int
+-exy_acpm_pmic(uint32_t reg, uint32_t cmd1)
++exy_acpm_xfer(struct acpm_ch *ch, uint32_t cmd[4])
+ {
+ 	uint64_t deadline;
+-	uint32_t front = touch_rd(acpm.tx_front, 0), next = (front + 1) % acpm.len;
++	uint32_t front = touch_rd(ch->tx_front, 0), next = (front + 1) % ch->len;
+ 
+ 	nanoseconds_to_absolutetime(100 * NSEC_PER_MSEC, &deadline);
+ 	deadline += mach_absolute_time();
+-	while (next == touch_rd(acpm.tx_rear, 0)) {             /* queue full */
++	while (next == touch_rd(ch->tx_rear, 0)) {              /* queue full */
+ 		if (mach_absolute_time() > deadline) {
+ 			return -1;
+ 		}
+ 		delay(10);
+ 	}
+-	if (++acpm.seq == 64) {
+-		acpm.seq = 1;
++	if (++ch->seq == 64) {
++		ch->seq = 1;
+ 	}
+-	vm_offset_t slot = acpm.tx_base + acpm.size * front;
+-	touch_wr(slot, 0, acpm.seq << 16 | 1u << 8 | (reg & 0xff));     /* PMIC page 1 */
+-	touch_wr(slot, 4, cmd1);
+-	for (uint32_t o = 8; o < acpm.size; o += 4) {
+-		touch_wr(slot, o, 0);
++	vm_offset_t slot = ch->tx_base + ch->size * front;
++	touch_wr(slot, 0, (cmd[0] & ~(0x3fu << 16)) | ch->seq << 16);
++	for (uint32_t o = 4; o < ch->size; o += 4) {
++		touch_wr(slot, o, o < 16 ? cmd[o / 4] : 0);
+ 	}
+-	touch_wr(acpm.tx_front, 0, next);
+-	touch_wr(st.mbox, 0x08, (1u << acpm.id) << 16);        /* INTGR0: ring the APM */
++	touch_wr(ch->tx_front, 0, next);
++	touch_wr(st.mbox, 0x08, (1u << ch->id) << 16);         /* INTGR0: ring the APM */
+ 
+ 	nanoseconds_to_absolutetime(100 * NSEC_PER_MSEC, &deadline);
+ 	deadline += mach_absolute_time();
+ 	while (mach_absolute_time() < deadline) {
+-		if (!(touch_rd(st.mbox, 0x28) & (1u << acpm.id))) {   /* INTSR1 */
++		if (!(touch_rd(st.mbox, 0x28) & (1u << ch->id))) {    /* INTSR1 */
+ 			delay(5);
+ 			continue;
+ 		}
+-		uint32_t rear = touch_rd(acpm.rx_rear, 0), rfront = touch_rd(acpm.rx_front, 0);
+-		for (uint32_t i = rear; i != rfront; i = (i + 1) % acpm.len) {
+-			vm_offset_t r = acpm.rx_base + acpm.size * i;
+-			if (((touch_rd(r, 0) >> 16) & 0x3f) != acpm.seq) {
++		uint32_t rear = touch_rd(ch->rx_rear, 0), rfront = touch_rd(ch->rx_front, 0);
++		for (uint32_t i = rear; i != rfront; i = (i + 1) % ch->len) {
++			vm_offset_t r = ch->rx_base + ch->size * i;
++			if (((touch_rd(r, 0) >> 16) & 0x3f) != ch->seq) {
+ 				continue;
+ 			}
+-			uint32_t c1 = touch_rd(r, 4);
++			for (uint32_t w = 0; w < 4 && w * 4 < ch->size; w++) {
++				cmd[w] = touch_rd(r, w * 4);
++			}
+ 			if (i != rear) {        /* keep the queue compact, as check_response */
+-				for (uint32_t o = 0; o < acpm.size; o += 4) {
+-					touch_wr(r, o, touch_rd(acpm.rx_base + acpm.size * rear, o));
++				for (uint32_t o = 0; o < ch->size; o += 4) {
++					touch_wr(r, o, touch_rd(ch->rx_base + ch->size * rear, o));
+ 				}
+ 			}
+-			rear = (rear + 1) % acpm.len;
+-			touch_wr(acpm.rx_rear, 0, rear);
+-			if (rear == touch_rd(acpm.rx_front, 0)) {
+-				touch_wr(st.mbox, 0x20, 1u << acpm.id); /* INTCR1 */
++			rear = (rear + 1) % ch->len;
++			touch_wr(ch->rx_rear, 0, rear);
++			if (rear == touch_rd(ch->rx_front, 0)) {
++				touch_wr(st.mbox, 0x20, 1u << ch->id);  /* INTCR1 */
+ 			}
+-			uint32_t status = (c1 >> 24) & 0xff;
+-			return status ? -(int)(0x100 + status) : (int)((c1 >> 8) & 0xff);
++			return 0;
+ 		}
+ 		delay(5);
+ 	}
+ 	return -1;
+ }
+ 
++/*
++ * One PMIC request, acpm_mfd's encoding: cmd[0] = type << 8 | reg, cmd[1] =
++ * func (READ 0, UPDATE 2 | val << 8 | mask << 16); reply cmd[1]: byte bits
++ * 8-15, status bits 24-31. Returns the byte, or -1 (timeout) or
++ * -(0x100 + status).
++ */
++static int
++exy_acpm_pmic(uint32_t reg, uint32_t cmd1)
++{
++	uint32_t cmd[4] = {1u << 8 | (reg & 0xff), cmd1, 0, 0};    /* PMIC page 1 */
++	if (exy_acpm_xfer(&acpm_mfd, cmd)) {
++		return -1;
++	}
++	uint32_t status = (cmd[1] >> 24) & 0xff;
++	return status ? -(int)(0x100 + status) : (int)((cmd[1] >> 8) & 0xff);
++}
++
++/*
++ * Exynos 9810 DVFS through the APM (acpm_dvfs.c, DT acpm-ipc-channel 5):
++ * cmd[0] = domain (cal-id & 0xff: 0 MIF, 1 INT, 2 CPUCL0 = A55, 3 CPUCL1 =
++ * M3, 4 G3D), cmd[1] = kHz, cmd[2] = FREQ_REQ 0 / FREQ_GET 1. The APM
++ * picks the voltage from its own ECT table, as for Linux's cpufreq.
++ */
++#define EXY_ACPM_DVFS_CH  5u
++#define EXY_DVFS_MIF      0u
++#define EXY_DVFS_CPUCL0   2u
++#define EXY_CL0_MAX_KHZ   1794000u    /* DT cpufreq-ufc: cl0 limits */
++#define EXY_MIF_MAX_KHZ   2093000u
++
++static long
++exy_dvfs(uint32_t dom, uint32_t req, uint32_t khz)
++{
++	uint32_t cmd[4] = {dom, khz, req, 0};
++	if (exy_acpm_xfer(&acpm_dvfs, cmd)) {
++		return -1;
++	}
++	return cmd[1];
++}
++
++/*
++ * Report the clocks S-Boot left (always) and raise the A55 cluster and MIF
++ * when asked: boot-args sweetcpufreq / sweetmiffreq, kHz, 0 = leave.
++ */
++static void
++exy_cpu_dvfs(void)
++{
++	static const char *const names[] = {"mif", "int", "cl0", "cl1", "g3d"};
++	uint32_t cpu = 0, mif = 0;
++	(void)PE_parse_boot_argn("sweetcpufreq", &cpu, sizeof(cpu));
++	(void)PE_parse_boot_argn("sweetmiffreq", &mif, sizeof(mif));
++	if (!exy_acpm_init(&acpm_dvfs, EXY_ACPM_DVFS_CH)) {
++		return;
++	}
++	for (uint32_t d = 0; d < 5; d++) {
++		printf("SWEET DVFS: %s %ld kHz\n", names[d], exy_dvfs(d, 1, 0));
++	}
++	if (mif) {
++		mif = mif > EXY_MIF_MAX_KHZ ? EXY_MIF_MAX_KHZ : mif;
++		(void)exy_dvfs(EXY_DVFS_MIF, 0, mif);
++		printf("SWEET DVFS: mif -> %u: now %ld kHz\n", mif, exy_dvfs(EXY_DVFS_MIF, 1, 0));
++	}
++	if (cpu) {
++		cpu = cpu > EXY_CL0_MAX_KHZ ? EXY_CL0_MAX_KHZ : cpu;
++		(void)exy_dvfs(EXY_DVFS_CPUCL0, 0, cpu);
++		printf("SWEET DVFS: cl0 -> %u: now %ld kHz\n", cpu, exy_dvfs(EXY_DVFS_CPUCL0, 1, 0));
++	}
++}
++
+ /*
+  * Exynos touch power: LDO35 then LDO43 (sec_ts_power order), only if their
+  * voltage selectors are the DT's 1.8 / 3.0 V; only the enable bits change.
+@@ -497,7 +565,7 @@ exy_acpm_pmic(uint32_t reg, uint32_t cmd1)
+ static bool
+ exy_touch_power(void)
+ {
+-	if (!exy_acpm_init()) {
++	if (!exy_acpm_init(&acpm_mfd, EXY_ACPM_MFD_CH)) {
+ 		return false;
+ 	}
+ 	int l35 = exy_acpm_pmic(EXY_L35CTRL, 0), l43 = exy_acpm_pmic(EXY_L43CTRL, 0);
+@@ -615,6 +683,17 @@ touch_thread(void *arg, wait_result_t result)
+ 	unsigned delay_s = 45;
+ 	(void)arg;
+ 	(void)result;
++	if (st.exynos) {        /* CPU/MIF clocks first, before the touch delay */
++		st.mbox = ml_io_map(EXY_ACPM_MBOX_PA, PAGE_SIZE);
++		st.sram = ml_io_map(EXY_ACPM_SRAM_PA, EXY_ACPM_SRAM_LEN);
++		if (st.mbox && st.sram) {
++			exy_cpu_dvfs();
++		}
++	}
++	if (!st.enabled) {
++		printf("SWEET TOUCH: disabled (sweettouch=0)\n");
++		goto out;
++	}
+ 	/*
+ 	 * Start late (boot-arg sweettouchdelay, seconds): if the bus access
+ 	 * below hangs the SoC, the persistent log and the GUI got there first.
+@@ -625,8 +704,6 @@ touch_thread(void *arg, wait_result_t result)
+ 	if (st.exynos) {
+ 		st.gpio = ml_io_map(EXY_PERIC0_PA, PAGE_SIZE);
+ 		st.alive = ml_io_map(EXY_ALIVE_PA, PAGE_SIZE);
+-		st.mbox = ml_io_map(EXY_ACPM_MBOX_PA, PAGE_SIZE);
+-		st.sram = ml_io_map(EXY_ACPM_SRAM_PA, EXY_ACPM_SRAM_LEN);
+ 		if (!st.gpio || !st.alive || !st.mbox || !st.sram) {
+ 			printf("SWEET TOUCH: Exynos mappings failed\n");
+ 			goto out;
+@@ -863,11 +940,12 @@ sweet_touch_init(void)
+ 	}
+ 	st.started = true;
+ 	(void)PE_parse_boot_argn("sweettouch", &enabled, sizeof(enabled));
+-	if (!enabled) {
++	st.enabled = enabled != 0;
++	st.exynos = sweet_is_exynos();
++	if (!st.enabled && !st.exynos) {        /* Exynos: the thread also sets clocks */
+ 		printf("SWEET TOUCH: disabled (sweettouch=0)\n");
+ 		return;
+ 	}
+-	st.exynos = sweet_is_exynos();
+ 	st.bus = st.exynos ? &exy_ts_bus : &ts_bus;
+ 	st.irq = st.exynos ? EXY_TS_IRQ : TS_IRQ;
+ 	kern_return_t kr = kernel_thread_start(touch_thread, NULL, &thread);
