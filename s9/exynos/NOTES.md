@@ -961,3 +961,5 @@ Research (observed in sources): panel lcdtype 9503811 = 0x910443 = Samsung's `s6
 
 - **Display Zoom -> dark screen (user, boot-ios13; log s9/logs/boot-ios13-zoom.txt, observed):** no crash. With Zoom on, backboardd renders 750x1624 (zoomed canvas) instead of 828x1792 and keeps creating 750x1624 surfaces while `IOServiceMatchingfailed for: AppleM2ScalerCSCDriver` repeats (the hardware scaler it would use to fit 750x1624 onto the 828x1792 display does not exist here), so nothing is presented. Fix today: restore USERDATA to the ElleKit image (Zoom off). Real fix later: offer a 750x1624 mode / scale in SweetFramebuffer, or an AppleM2ScalerCSCDriver stand-in. Avoid Display Zoom meanwhile.
 - Same log: battery driver live data `SWEET BATTERY: soc=47.4% vcell=3708mV avg=-223mA now=-685mA rep=1408/2967mAh design=2967mAh cycles=0.86 chgin=0 ...` (unplugged).
+- 2026-10-29: boot-ios14 flashed (verified readback 5f125852...) and USERDATA restored to the ElleKit v3 image via --changed (18 chunks, whole range 6b408b59... = image; Display Zoom off again). Rebooted into iOS. Test pending: screen dimmer at boot (sweetbl=200), brightness slider, 'SWEET BL:' log lines.
+
