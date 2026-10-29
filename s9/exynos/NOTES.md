@@ -1116,3 +1116,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 
 - **boot-ios28 flashed** to BOOT (sda10), readback sha256 fae18868... matches. Rebooted. Fallback boot-ios25 / boot-ios15.
 
+- **boot-ios28 panic (photo, observed):** iOS was up (OS version 20H392 in the panic, user PCs on cores 0/2/3). Kernel data abort, esr 0x96000010 (synchronous external abort), far 0xfffffe100a43c000, registers x19 0x30300 / x23 0x30308 / x24 0x3030c / x26 0x30314 / x27 0xdead = the boot-done poll loop in exy_abox_boot: a plain touch_rd of ABOX SRAM ipc_rx 0x30300 bus-errored after the ABOX CPU was enabled. So rmem windows, SysMMU, GIC, firmware copy and CPU start got through without a panic; whether the CPU ran is in the sweetlog (pull from TWRP).
+
