@@ -3,8 +3,9 @@
  *
  * The G960F's touch controller is a Samsung LSI S6SY761 ("sec,sec_ts",
  * firmware tsp_sec/y761_star1.fw) at I2C address 0x48 on the USI-v2 HSI2C
- * at 0x104B0000 (stock rev26 DT; pins GPG3-3/4 function 2 in PERIC1
- * pinctrl 0x10830000 + 0xC0), attention IRQ on GPA1-0 (ALIVE 0x14050040,
+ * at 0x104B0000 (stock rev26 DT; its pinctrl-0 is hsi2c10-bus = GPP1-4/5
+ * function 2, no pull, in PERIC0 pinctrl 0x10430000 + 0x20 - X6..X6.2 set
+ * GPG3-3/4, another bus's pins), attention IRQ on GPA1-0 (ALIVE 0x14050040,
  * active low), supplies S2MPS18 LDO35 tsp_io 1.8 V and LDO43 tsp_avdd
  * 3.0 V, both regulator-boot-on. This stage finds out what S-Boot leaves
  * on: it reads the HSI2C block (a gated clock would fault: SHIM PANIC with
@@ -23,6 +24,7 @@
 #define RUN_SECONDS	60
 
 #define HSI2C		0x104B0000UL
+#define PERIC0_GPP1	0x10430020UL	/* CON +0, DAT +4, PUD +8 */
 /*
  * USI-v2: PERIC0 USI port 3 (spi/uart/hsi2c@104B0000) takes its protocol
  * from this SYSREG word (stock DT usi@1041101C usi_v2_mode = "i2c"). Until
@@ -261,7 +263,7 @@ void shim_main(uint64_t dtb)
 	if (!xp.fb_ok)
 		xp_reset();
 	con_clear(GREY);
-	con_title("EXYNOS X6.2 RUNS");
+	con_title("EXYNOS X6.3 RUNS");
 	con_str("MODEL", xp.model[0] ? xp.model : "(no DTB)");
 
 	/* what S-Boot left: pins, IRQ level, and the HSI2C block itself */
@@ -284,12 +286,17 @@ void shim_main(uint64_t dtb)
 	put_hex(put(p, " -> "), rd32(SYSREG_USI03), 8);
 	con_str("USI", b);
 
-	/* GPG3-3/4 -> function 2 (hsi2c26-bus) */
-	uint32_t con = rd32(PERIC1_GPG3);
-	con = (con & ~(0xffu << 12)) | 0x22u << 12;
-	wr32(PERIC1_GPG3, con);
+	/* X6.3: GPP1-4/5 -> function 2, no pull (hsi2c10-bus, the controller's own pinctrl-0) */
+	p = put_hex(put(b, "gpp1 con "), rd32(PERIC0_GPP1), 8);
+	put_hex(put(p, " pud "), rd32(PERIC0_GPP1 + 8), 8);
+	con_str("GPP1", b);
+	uint32_t con = rd32(PERIC0_GPP1);
+	con = (con & ~(0xffu << 16)) | 0x22u << 16;
+	wr32(PERIC0_GPP1, con);
+	wr32(PERIC0_GPP1 + 8, rd32(PERIC0_GPP1 + 8) & ~(0xffu << 16));
 	hsi2c_reset();
-	p = put_hex(put(b, "gpg3 con "), rd32(PERIC1_GPG3), 8);
+	p = put_hex(put(b, "gpp1 con "), rd32(PERIC0_GPP1), 8);
+	p = put_hex(put(p, " pud "), rd32(PERIC0_GPP1 + 8), 8);
 	p = put_hex(put(p, " ctl "), hr(CTL), 8);
 	p = put_hex(put(p, " conf "), hr(CONF), 8);
 	put_hex(put(p, " fs3 "), hr(TIMING_FS3), 8);
@@ -305,22 +312,7 @@ void shim_main(uint64_t dtb)
 	p = put_hex(put(p, " ipclk "), rd32(CMU_GOUT_IPCLK), 8);
 	put_hex(put(p, " qch "), rd32(CMU_QCH_USI03), 8);
 	con_str("", b);
-	const uintptr_t gates[3] = { CMU_GATE_USI03, CMU_GOUT_RSTSYN, CMU_GOUT_IPCLK };
-	for (int i = 0; i < 3; i++)
-		wr32(gates[i], (rd32(gates[i]) & ~GATE_AUTO) | GATE_MANUAL_ON);
-	hsi2c_reset();
-	r = ts_read(SEC_TS_READ_ID, d, 3);
-	put_bytes(put_rc(b, "gates on: id", r), d, r ? 0 : 3);
-	con_str("TRY 1", b);
-	if (r) {
-		/* Q-channel: auto gating off, clock requested */
-		wr32(CMU_QCH_USI03, (rd32(CMU_QCH_USI03) & ~1u) | 1u << 1 | 1u << 2);
-		hsi2c_reset();
-		r = ts_read(SEC_TS_READ_ID, d, 3);
-		p = put_hex(put(b, "qch "), rd32(CMU_QCH_USI03), 8);
-		put_bytes(put_rc(put(p, " "), "id", r), d, r ? 0 : 3);
-		con_str("TRY 2", b);
-	}
+	/* X6.2 showed these already on (gates CG_VAL, QCH CLOCK_REQ): read only */
 	con_skip();
 
 	/* the chip: pending event (boot status), IDs */
