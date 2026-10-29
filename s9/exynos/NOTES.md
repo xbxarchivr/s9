@@ -1142,3 +1142,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 - **Patch 0131 (written, not built):** after the fault, abox_postmortem scans SRAM (past the image, below 0x30000) and the 18 MB DRAM area for 16 KB-aligned ARMv7 L1 tables (prints the first 48 non-zero entries = the CA7 VA map) and for printable text the firmware wrote outside its images (its log), up to 60 lines; safe reads throughout.
 - **0131 compiled** (run 40973865259, success): `out/exynos/xnu28/kernel.development.sweet` sha256 1203a22f... **Boot image `out/exynos/boot-ios32.img`** (sha256 ff2b58c8...) = boot-ios31 blobs/cmdline with the 0131 kernel. Not flashed. Fallback: boot-ios31/30 (boot iOS) / boot-ios25.
 
+- **boot-ios32 flashed** to BOOT (sda10), readback sha256 ff2b58c8... matches. Rebooted. Fallback boot-ios31 / boot-ios25.
+
