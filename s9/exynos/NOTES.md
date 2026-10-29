@@ -1114,3 +1114,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 - **Patch 0127 (written, not built):** the abox_rmem windows use ml_io_map_unmappable(pa, 1 MB, VM_WIMG_IO 0x7) (KMA_DATA in kernel_map, which ml_io_unmap frees); declared extern in sweet_touch.c since BSD does not see it. Rule: any mapping that is unmapped later must come from ml_io_map_unmappable.
 - **0127 compiled** (run 40967406672, success): `out/exynos/xnu24/kernel.development.sweet` sha256 787051a5... **Boot image `out/exynos/boot-ios28.img`** (sha256 fae18868...) = boot-ios27 cmdline (sweetaudio=4, Calliope blobs) with the 0127 kernel. Not flashed. Fallback: boot-ios25 / boot-ios15.
 
+- **boot-ios28 flashed** to BOOT (sda10), readback sha256 fae18868... matches. Rebooted. Fallback boot-ios25 / boot-ios15.
+
