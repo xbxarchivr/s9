@@ -61,6 +61,7 @@ struct cpu {
 	char compat[28], enable[12];
 	volatile int state;
 	volatile uint64_t midr, mpidr, mmfr0, mmfr1, pfr0, el, sctlr, esr, elr;
+	volatile uint64_t isar0, isar1;	/* X1.7: LSE atomics, RCpc, PAN (mmfr1) */
 	uint64_t t_call, t_arrive;	/* CNTPCT at CPU_ON and at the report */
 	int late;			/* reported only after its wait ran out */
 	int64_t ret;			/* PSCI CPU_ON */
@@ -409,6 +410,7 @@ static void pick_decon(void)
 
 struct report {
 	uint64_t magic, midr, mpidr, mmfr0, mmfr1, pfr0, el, sctlr, esr, elr, t;
+	uint64_t isar0, isar1;
 } __attribute__((aligned(64)));
 
 static volatile struct report rep[NR_CPUS];
@@ -449,6 +451,8 @@ static void cpu_read(struct cpu *c)
 	c->mmfr0 = rsr("id_aa64mmfr0_el1");
 	c->mmfr1 = rsr("id_aa64mmfr1_el1");
 	c->pfr0 = rsr("id_aa64pfr0_el1");
+	c->isar0 = rsr("id_aa64isar0_el1");
+	c->isar1 = rsr("id_aa64isar1_el1");
 	c->el = (rsr("CurrentEL") >> 2) & 3;
 	c->sctlr = rsr("sctlr_el1");
 }
@@ -464,6 +468,8 @@ void secondary_main(uint64_t slot)
 	r->mmfr0 = rsr("id_aa64mmfr0_el1");
 	r->mmfr1 = rsr("id_aa64mmfr1_el1");
 	r->pfr0 = rsr("id_aa64pfr0_el1");
+	r->isar0 = rsr("id_aa64isar0_el1");
+	r->isar1 = rsr("id_aa64isar1_el1");
 	r->el = (rsr("CurrentEL") >> 2) & 3;
 	r->sctlr = rsr("sctlr_el1");
 	r->t = now();
@@ -491,6 +497,8 @@ static int take_report(int i)
 	c->mmfr0 = r->mmfr0;
 	c->mmfr1 = r->mmfr1;
 	c->pfr0 = r->pfr0;
+	c->isar0 = r->isar0;
+	c->isar1 = r->isar1;
 	c->el = r->el;
 	c->sctlr = r->sctlr;
 	c->esr = r->esr;
@@ -689,7 +697,7 @@ static void draw(int final, int cpu_y)
 		return;
 	}
 	con_clear(GREY);
-	con_title("EXYNOS X1.6 RUNS");
+	con_title("EXYNOS X1.7 RUNS");
 	bands();
 
 	con_str("MODEL", x.model[0] ? x.model : "(no DTB)");
@@ -757,7 +765,7 @@ static void draw(int final, int cpu_y)
 static void draw_final(int cpu_y)
 {
 	con_set_row(24);	/* con.c TOP */
-	con_title("EXYNOS X1.6: OK ");
+	con_title("EXYNOS X1.7: OK ");
 	con_set_row(cpu_y);
 	for (int i = 0; i < x.ncpu; i++)
 		cpu_row(i);
@@ -781,21 +789,36 @@ static void draw_final(int cpu_y)
 	}
 	if (m3.done) {
 		char b[96], *p;
-		for (int k = 0; k < 6; k++) {
-			p = put_hex(b, m3_lpm[k].off, 4);
-			p = put_hex(put(p, " "), m3.before[k], 8);
-			put_hex(put(p, " -> "), m3.after[k], 8);
-			con_str(k ? "" : "M3 PMU", b);
-		}
-		for (int k = 0; k < 5; k++) {
-			p = put_hex(b, m3_status[k], 4);
-			p = put_hex(put(p, " "), m3.st0[k], 8);
-			put_hex(put(p, " -> "), m3.st1[k], 8);
-			con_str(k ? "" : "M3 STAT", b);
-		}
-		p = put_hex(put(b, "RSC "), m3.rsc, 8);
-		put_hex(put(p, " APM2AP "), m3.mbox, 8);
-		con_str("M3 MISC", b);
+		/* X1.6 showed every value; X1.7 keeps one line of each */
+		p = put_hex(b, m3.after[0], 8);
+		put_hex(put(p, " opt "), m3.after[1], 1);
+		con_str("M3 PMU", b);
+		p = put_hex(b, m3.st0[0], 8);
+		p = put_hex(put(p, " -> "), m3.st1[0], 8);
+		put_hex(put(p, " nc "), m3.st1[4], 8);
+		con_str("M3 STAT", b);
+	}
+	/*
+	 * X1.7: what XNU (-march=armv8.2-a, PAN) and A11 userland need from every
+	 * core. ISAR0 [23:20] atomics (2 = LSE), [31:28] RDM; ISAR1 [23:20] LRCPC,
+	 * [3:0] DPB; MMFR1 [23:20] PAN, [11:8] VH; PFR0 [19:16] FP (1 = +fp16).
+	 */
+	for (int i = 0; i < x.ncpu; i++) {
+		struct cpu *c = &x.cpu[i];
+		char b[96], label[] = "ID CPU0", *p;
+		if ((c->state != CPU_UP && c->state != CPU_SELF) || (i != 0 && i != 4))
+			continue;
+		label[6] = '0' + i;
+		p = put_hex(put(b, "I0 "), c->isar0, 8);
+		p = put_hex(put(p, " I1 "), c->isar1, 8);
+		p = put_hex(put(p, " M1 "), c->mmfr1, 8);
+		con_str(label, b);
+		p = put_hex(put(b, "PF0 "), c->pfr0, 8);
+		p = put_dec(put(p, " LSE "), (c->isar0 >> 20) & 0xf);
+		p = put_dec(put(p, " PAN "), (c->mmfr1 >> 20) & 0xf);
+		p = put_dec(put(p, " RCPC "), (c->isar1 >> 20) & 0xf);
+		put_dec(put(p, " FP "), (c->pfr0 >> 16) & 0xf);
+		con_str("", b);
 	}
 	con_skip();
 }
