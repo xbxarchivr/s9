@@ -830,3 +830,5 @@ Chlorophyll (ry-diffusion): Metal on Mesa freedreno for Adreno 630 (iOS 18 arm64
 - Next speed ideas: sweetmiffreq (MIF up to 2093000; effect only visible in present copy time since GET reads 0), sweetfb_hz above 10 now that the CPU is 1.7x faster, M3 big cores (CPU_ON never arrived, see X1.x).
 - **Boot image `out/exynos/boot-ios10.img`** (sha256 4fb91220...) = 0111 kernel (xnu8) + boot-ios9 cmdline + **sweetmiffreq=2093000 sweetfb_hz=20**. Not flashed. Compare present avg/fps with boot-ios9 (6.4 ms, 10.6 fps).
 
+- boot-ios10 flashed 2026-10-29 with verified readback, rebooted into iOS. Result pending.
+
