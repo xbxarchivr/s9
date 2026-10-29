@@ -824,3 +824,5 @@ Chlorophyll (ry-diffusion): Metal on Mesa freedreno for Adreno 630 (iOS 18 arm64
 
 - **0111 compiled** (run 40808819701, success): `out/exynos/xnu8/kernel.development.sweet` sha256 aaa5a91d... **Boot image `out/exynos/boot-ios9.img`** (sha256 926504d4...) = boot-ios8 cmdline; adds 'SWEET DVFS: A55 measured N MHz' before/after the cl0 request and raw cl0 reply words. Not flashed.
 
+- boot-ios9 flashed 2026-10-29 with verified readback, rebooted into iOS. Result pending.
+
