@@ -862,3 +862,5 @@ X1.7 = X1.6 + ISAR0/ISAR1 on every core; final screen shows for CPU0 (A55) and C
   - **M3 (CPU4): ISAR0 00011120, ISAR1 00000000, MMFR1 00000000, PFR0 00002222 -> LSE 0, PAN 0, RCPC 0, FP 0 (no fp16), no RDM, no VH, no DPB. Pure ARMv8.0 + crypto/CRC.**
   - Consequence: the current kernel (-march=armv8.2-a, PAN) cannot run on an M3. iOS 16 userland is built for the A11 (v8.2: LSE atomics, fp16), so user threads on an M3 would likely SIGILL - not verified (would need disassembly of the shared cache).
   - Options: (A) kernel rebuilt for armv8-a without PAN (or PAN toggled at runtime only on A55s) and M3s used only for bound kernel work, e.g. the sweet.fb.present copy/scale (6-13 ms per frame); (B) trap-and-emulate LSE/fp16 on the M3s (slow, large); (C) leave the M3s off. A is the only one with a clear payoff.
+- boot-ios10b restored on BOOT 2026-10-29 after X1.7 (verified readback), rebooted into iOS.
+
