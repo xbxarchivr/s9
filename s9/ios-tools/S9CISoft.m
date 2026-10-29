@@ -1,29 +1,31 @@
 /*
- * S9CISoft: CoreImage on the CPU for the Galaxy S9 port (no GPU, no Metal).
+ * S9CISoft: keep CoreImage off its broken OpenGL ES path on the Galaxy S9
+ * port (no GPU, no Metal).
  *
- * Without a Metal device, -[CIContext initWithOptions:] falls back to an
- * OpenGL ES context (+[CIContext internalContextWithEAGLContext:options:]).
- * iOS 16's GLES runs on Metal, so that context is broken and
- * CI::GLContext::init() calls a NULL function pointer (iOS 16.7.16 20H392,
- * CoreImage 0x194B3858C). Every process that makes a default CIContext dies
- * there: SpringBoard with Bold Text (CUIShapeEffectStack sharedCIContext),
- * Messages (app icon scaling, _MI_sharedIconCompositorContext).
+ * -[CIContext initWithOptions:] (iOS 16.7.16 20H392) has two renderers:
+ * Metal (CIMetalCopyDefaultDevice -> +internalContextWithMTLDevice:options:)
+ * and, without a Metal device, GL (+internalGLContextWithOptions: ->
+ * +internalContextWithEAGLContext:options:). iOS 16's GLES runs on Metal, so
+ * that GL context is broken and CI::GLContext::init() calls a NULL function
+ * pointer (CoreImage 0x194B3858C). Every process that makes a default
+ * CIContext died there: SpringBoard with Bold Text (CUIShapeEffectStack
+ * sharedCIContext), Messages (app icon scaling). There is no CPU renderer
+ * branch: kCIContextUseSoftwareRenderer ("software_renderer") changes
+ * nothing on this path (v1/v2 of this tweak tried it).
  *
- * This ElleKit tweak adds kCIContextUseSoftwareRenderer = YES
- * ("software_renderer") to the options when there is no Metal device, so
- * CoreImage uses its CPU renderer instead. The Metal check happens once, on
- * the first CIContext. /var/mobile/Library/S9CISoft/disabled turns it off.
+ * So without a Metal device the two GL entry points return NULL. Both return
+ * an internal CI::Context*, and initWithOptions: already handles NULL there
+ * (cbz after the call at 0x1949A3118: release self, return nil), so callers
+ * get a nil CIContext instead of a crash. The Metal check happens once.
+ * /var/mobile/Library/S9CISoft/disabled turns it off.
  *
  * Apps load CoreImage late (Messages: through IconServices), after
- * TweakInject has matched filters, so the filter is UIKit and the hook goes
+ * TweakInject has matched filters, so the filter is UIKit and the hooks go
  * in when CoreImage's classes appear: dyld's add-image callbacks run after
  * the ObjC runtime has registered an image's classes and released its lock
  * (objc_addLoadImageFunc would call back with that lock held, and
  * method_setImplementation takes it). What happened goes to log.txt in that
  * directory where the sandbox allows writing (SpringBoard yes, apps no).
- *
- * Built without ARC: the replacement stands in for an init method (consumes
- * self, returns +1), which a C function under ARC would get wrong.
  */
 #import <Foundation/Foundation.h>
 #include <dlfcn.h>
@@ -41,7 +43,10 @@
 
 #define DIR "/var/mobile/Library/S9CISoft/"
 
-static id (*orig_initWithOptions)(id, SEL, NSDictionary *);
+typedef void *(*gl_options_fn)(id, SEL, NSDictionary *);
+typedef void *(*gl_eagl_fn)(id, SEL, id, NSDictionary *);
+static gl_options_fn orig_glWithOptions;
+static gl_eagl_fn orig_glWithEAGL;
 static atomic_bool hooked;
 
 static void slog(const char *what)
@@ -62,20 +67,27 @@ static BOOL no_metal(void)
 		id dev = create != NULL ? create() : nil;
 		none = dev == nil;
 		[dev release];
-		slog(none ? "no Metal device: CIContexts use the software renderer" : "Metal device present: CIContexts untouched");
+		slog(none ? "no Metal device: CoreImage GL contexts refused" : "Metal device present: CoreImage untouched");
 	});
 	return none;
 }
 
-static id s9_initWithOptions(id self, SEL _cmd, NSDictionary *options)
+static void *s9_glWithOptions(id self, SEL _cmd, NSDictionary *options)
 {
-	if (no_metal() && options[@"software_renderer"] == nil) {
-		NSMutableDictionary *o = options != nil ? [[options mutableCopy] autorelease] :
-		    [NSMutableDictionary dictionary];
-		o[@"software_renderer"] = @YES;
-		options = o;
+	if (no_metal()) {
+		slog("refused +[CIContext internalGLContextWithOptions:]");
+		return NULL;
 	}
-	return orig_initWithOptions(self, _cmd, options);
+	return orig_glWithOptions(self, _cmd, options);
+}
+
+static void *s9_glWithEAGL(id self, SEL _cmd, id eagl, NSDictionary *options)
+{
+	if (no_metal()) {
+		slog("refused +[CIContext internalContextWithEAGLContext:options:]");
+		return NULL;
+	}
+	return orig_glWithEAGL(self, _cmd, eagl, options);
 }
 
 /* dyld calls this for every image already loaded and every later one */
@@ -88,12 +100,16 @@ static void image_added(const struct mach_header *mh, intptr_t slide)
 	Class c = objc_getClass("CIContext");
 	if (c == Nil)
 		return;
-	Method m = class_getInstanceMethod(c, @selector(initWithOptions:));
-	if (m == NULL || atomic_exchange(&hooked, true))
+	Method a = class_getClassMethod(c, sel_registerName("internalGLContextWithOptions:"));
+	Method b = class_getClassMethod(c, sel_registerName("internalContextWithEAGLContext:options:"));
+	if ((a == NULL && b == NULL) || atomic_exchange(&hooked, true))
 		return;
-	orig_initWithOptions = (id (*)(id, SEL, NSDictionary *))
-	    method_setImplementation(m, (IMP)s9_initWithOptions);
-	slog("hooked -[CIContext initWithOptions:]");
+	if (a != NULL)
+		orig_glWithOptions = (gl_options_fn)method_setImplementation(a, (IMP)s9_glWithOptions);
+	if (b != NULL)
+		orig_glWithEAGL = (gl_eagl_fn)method_setImplementation(b, (IMP)s9_glWithEAGL);
+	slog(a != NULL && b != NULL ? "hooked CIContext GL entry points" :
+	    a != NULL ? "hooked +internalGLContextWithOptions: only" : "hooked +internalContextWithEAGLContext:options: only");
 }
 
 __attribute__((constructor)) static void init(void)

@@ -30,7 +30,7 @@ jobs:
             -o out/S9CAEnv.dylib S9CAEnv.c
           codesign -f -s - out/S9CAEnv.dylib
           cp S9CAEnv.plist out/
-          # S9CISoft tweak (ElleKit, every CoreImage process): CPU renderer when there is no Metal
+          # S9CISoft tweak (ElleKit, UIKit processes): no CoreImage GL contexts when there is no Metal
           xcrun -sdk iphoneos clang -arch arm64 -miphoneos-version-min=16.0 -Os -Wall -Werror -fno-objc-arc -dynamiclib \
             -framework Foundation -o out/S9CISoft.dylib S9CISoft.m
           codesign -f -s - out/S9CISoft.dylib
