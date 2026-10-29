@@ -1068,3 +1068,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 - **Patch 0122 (written):** sweetaudio=3 issues smc(0x82000410, 1, 0x17c10204, 0) (flushed log line first), logs the return, then the flushed sysreg and SysMMU reads as before.
 - **0122 compiled** (run 40919984471, success): `out/exynos/xnu19/kernel.development.sweet` sha256 bbbb488c... **Boot image `out/exynos/boot-ios23.img`** (sha256 e1981f5a...) = boot-ios22 cmdline (sweetaudio=3) with the 0122 kernel (DTZPC restore before the sysreg read). Not flashed. Fallback: boot-ios15.
 
+- boot-ios23 (DTZPC restore + ABOX probe) flashed 2026-10-29 with verified readback, rebooted. Result pending.
+
