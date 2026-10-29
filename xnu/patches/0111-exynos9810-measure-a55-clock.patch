@@ -1,0 +1,66 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 486cea3..1f6d75e 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -531,9 +531,46 @@ exy_dvfs(uint32_t dom, uint32_t req, uint32_t khz)
+ 	if (exy_acpm_xfer(&acpm_dvfs, cmd)) {
+ 		return -1;
+ 	}
++	if (dom == EXY_DVFS_CPUCL0) {   /* where does the APM put its answer? */
++		printf("SWEET DVFS: cl0 req %u %u kHz reply %#x %#x %#x %#x\n",
++		    req, khz, cmd[0], cmd[1], cmd[2], cmd[3]);
++	}
+ 	return cmd[1];
+ }
+ 
++/*
++ * The clock this core really runs at, without the PMU (Samsung's EL2 may
++ * trap it): a chain of 64 dependent adds per loop retires one per cycle on
++ * the A55 (latency 1; the loop's subs/b.ne dual-issue beside it), timed
++ * with interrupts off. Best of three, MHz.
++ */
++static uint32_t
++exy_cpu_mhz(void)
++{
++	const uint64_t iters = 20000;
++	uint64_t best = 0;
++	for (int run = 0; run < 3; run++) {
++		uint64_t n = iters, x = 0, t0, t1, ns;
++		boolean_t s = ml_set_interrupts_enabled(FALSE);
++		t0 = mach_absolute_time();
++		__asm__ volatile(
++			"1:\n"
++			".rept 64\n"
++			"add %0, %0, #1\n"
++			".endr\n"
++			"subs %1, %1, #1\n"
++			"b.ne 1b\n"
++			: "+r"(x), "+r"(n) : : "cc");
++		t1 = mach_absolute_time();
++		(void)ml_set_interrupts_enabled(s);
++		absolutetime_to_nanoseconds(t1 - t0, &ns);
++		if (ns && iters * 64 * 1000 / ns > best) {
++			best = iters * 64 * 1000 / ns;
++		}
++	}
++	return (uint32_t)best;
++}
++
+ /*
+  * Report the clocks S-Boot left (always) and raise the A55 cluster and MIF
+  * when asked: boot-args sweetcpufreq / sweetmiffreq, kHz, 0 = leave.
+@@ -561,10 +598,13 @@ exy_cpu_dvfs(void)
+ 		(void)exy_dvfs(EXY_DVFS_MIF, 0, mif);
+ 		printf("SWEET DVFS: mif -> %u: now %ld kHz\n", mif, exy_dvfs(EXY_DVFS_MIF, 1, 0));
+ 	}
++	printf("SWEET DVFS: A55 measured %u MHz\n", exy_cpu_mhz());
+ 	if (cpu) {
+ 		cpu = cpu > EXY_CL0_MAX_KHZ ? EXY_CL0_MAX_KHZ : cpu;
+ 		(void)exy_dvfs(EXY_DVFS_CPUCL0, 0, cpu);
+-		printf("SWEET DVFS: cl0 -> %u: now %ld kHz\n", cpu, exy_dvfs(EXY_DVFS_CPUCL0, 1, 0));
++		delay(20000);   /* PLL relock and voltage ramp */
++		printf("SWEET DVFS: cl0 -> %u: now %ld kHz, measured %u MHz\n", cpu,
++		    exy_dvfs(EXY_DVFS_CPUCL0, 1, 0), exy_cpu_mhz());
+ 	}
+ }
+ 
