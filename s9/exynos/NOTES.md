@@ -1070,3 +1070,6 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 
 - boot-ios23 (DTZPC restore + ABOX probe) flashed 2026-10-29 with verified readback, rebooted. Result pending.
 
+- **boot-ios23 RESULT (photo + log s9/logs/boot-ios23.txt, observed):** `DTZPC restore smc(0x82000410, 1, 0x17c10204) = 0` (EL3 accepted), then `reading sysreg 0x17c10000...` -> panic "Kernel data abort" on CPU 3, esr 0x96000010 (EC 0x25 data abort same EL, DFSC 0x10 synchronous external abort). So the restore alone does not open the ABOX sysreg.
+  - Hypotheses (not verified): (a) the restore only reapplies what a prior save (EXYNOS_GET_IN_PD_DOWN 0, before power-off) stored; S-Boot powered AUD on without that cycle, so mimic Linux: save -> AUD PD off -> on -> restore; (b) the sysreg's PCLK gate in CMU_AUD is off (ABOX SFR at 0x17C50000 is readable, sysreg may be gated separately) -> find CMU_AUD gate registers (cmucal-sfr.c "SYSREG_AUD").
+  - boot-ios23 panics on every boot: put boot-ios15 back.
