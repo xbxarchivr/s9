@@ -1,0 +1,48 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index b46a2ed..d2e8ead 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -1163,9 +1163,12 @@ abox_rm_write(uint32_t off, const uint8_t *src, uint32_t len, uint32_t total)
+ 	for (uint32_t w = 0; w < total; w += ABOX_RM_WIN) {
+ 		uint32_t n = total - w < ABOX_RM_WIN ? total - w : ABOX_RM_WIN;
+ 		uint32_t have = len > w ? (len - w < n ? len - w : n) : 0;
+-		vm_offset_t va = ml_io_map_unmappable(ABOX_RMEM_PA + off + w, ABOX_RM_WIN, SWEET_WIMG_IO);
+-		abox_copy(va, have ? src + w : NULL, have, n);
+-		ml_io_unmap(va, ABOX_RM_WIN);
++		/* page-aligned map/unmap: ext_bin offsets need not be page aligned */
++		vm_offset_t pa = ABOX_RMEM_PA + off + w, base = pa & ~(vm_offset_t)PAGE_MASK;
++		vm_size_t sz = (pa - base + n + PAGE_MASK) & ~(vm_size_t)PAGE_MASK;
++		vm_offset_t va = ml_io_map_unmappable(base, sz, SWEET_WIMG_IO);
++		abox_copy(va + (pa - base), have ? src + w : NULL, have, n);
++		ml_io_unmap(va, sz);
+ 	}
+ }
+ 
+@@ -1317,6 +1320,27 @@ exy_abox_boot(void)
+ 	if (fw_iva) {
+ 		abox_rm_write(ABOX_RM_IVA, fw_iva, iva_len, ABOX_IVA_FW_SIZE);
+ 	}
++	/*
++	 * boot-ios29/30: without these Calliope took a data abort at a
++	 * different garbage address each boot (DFSR 0x5, 0x1cd9f0 then
++	 * 0xa200067). abox.c abox_download_extra_firmware puts the DT ext_bin
++	 * files into area 1 (the DRAM firmware) at these offsets (vendor DTB,
++	 * /abox/ext_bin@0-6; @7 dummy.bin is disabled), after the DRAM copy.
++	 * mkpayload.py --blob NAME=vendor/firmware/NAME.
++	 */
++	static const struct { const char *name; uint32_t off; } ext[] = {
++		{ "dsm.bin", 0x502000 }, { "AP_AUDIO_SLSI.bin", 0x7e0000 },
++		{ "APBargeIn_AUDIO_SLSI.bin", 0x7dc000 }, { "SoundBoosterParam.bin", 0x4fc000 },
++		{ "APDV_AUDIO_SLSI.bin", 0x4d0000 }, { "APBiBF_AUDIO_SLSI.bin", 0x7df000 },
++		{ "dsm_tune.bin", 0x601000 },
++	};
++	for (unsigned i = 0; i < sizeof(ext) / sizeof(ext[0]); i++) {
++		uint32_t len = 0;
++		const uint8_t *fw = abox_blob(ext[i].name, &len);
++		if (fw && ext[i].off + len <= ABOX_DRAM_FW_SIZE) {
++			abox_rm_write(ABOX_RM_DRAM + ext[i].off, fw, len, (len + 3) & ~3u);
++		}
++	}
+ 	rm = ml_io_map_unmappable(ABOX_RMEM_PA + ABOX_RM_DRAM, ABOX_RM_WIN, SWEET_WIMG_IO);
+ 	v = touch_rd(rm, 0);
+ 	ml_io_unmap(rm, ABOX_RM_WIN);

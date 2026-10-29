@@ -1130,3 +1130,6 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 
 - **boot-ios30 flashed** to BOOT (sda10), readback sha256 5bc33fa3... matches. Rebooted. Fallback boot-ios29 / boot-ios25.
 
+- **boot-ios30 RESULT (log s9/logs/boot-ios30.txt, observed): booted to iOS.** Calliope PC 0x2aac -> 0x2768 again; ABOX_REPORT_FAULT: **param1 1 (data abort), param2 0x5 (ARMv7 DFSR: translation fault, level 1), param3 0xa200067** (boot-ios29: 0x1cd9f0, so the faulting address changes per boot = a garbage pointer); dump pointer 0x2d000 (SRAM) holds zeros; live CA7 regs: R1 0x17cf1f00 (its GICD_SGIR), R4 5, R5 0x0a200067, R6 0x0a200023, R13 0x1e000, R14 0x5503, PC 0x2768; L2C_STATUS 0.
+- **Cause (likely):** the DT ext_bin files abox.c loads into the DRAM firmware area were missing. Vendor DTB (dtb5) ext_bin@0-6, area 1, offsets: dsm.bin 0x502000, AP_AUDIO_SLSI.bin 0x7e0000, APBargeIn_AUDIO_SLSI.bin 0x7dc000, SoundBoosterParam.bin 0x4fc000, APDV_AUDIO_SLSI.bin 0x4d0000, APBiBF_AUDIO_SLSI.bin 0x7df000, dsm_tune.bin 0x601000 (@7 dummy.bin disabled). All seven are in VENDOR (sda19) /firmware; the five new ones copied to s9/out/firmware (gitignored).
+- **Patch 0130 (written, not built):** after the DRAM/IVA copy, each ext file is written at its offset if present as a --blob of the same name; abox_rm_write maps page-aligned windows (offsets need not be page aligned).
