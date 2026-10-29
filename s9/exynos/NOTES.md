@@ -1135,3 +1135,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 - **Patch 0130 (written, not built):** after the DRAM/IVA copy, each ext file is written at its offset if present as a --blob of the same name; abox_rm_write maps page-aligned windows (offsets need not be page aligned).
 - **0130 compiled** (run 40972250889, success): `out/exynos/xnu27/kernel.development.sweet` sha256 93e0a5ed... **Boot image `out/exynos/boot-ios31.img`** (sha256 3258a62f...) = sweetaudio=4 + Calliope-SRAM/-DRAM/-IVA + the seven ext_bin blobs (--blob dsm.bin=out\firmware\dsm.bin etc.). Not flashed. Fallback: boot-ios30/29 (boot iOS) / boot-ios25.
 
+- **boot-ios31 flashed** to BOOT (sda10), readback sha256 3258a62f... matches. Rebooted. Fallback boot-ios30 / boot-ios25.
+
