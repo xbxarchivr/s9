@@ -24,7 +24,7 @@ was read on the G960F by the shim stages X1-X3 (exynos/NOTES.md):
   UFS      /sweet-ufs compatible samsung,exynos9810-ufs, HCI 0x11120000+0x8000
            (patch 0106 re-inits the host as shim stage X5.6 did on the phone).
 """
-import os, sys
+import os, struct, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, '..', 'tools'))
@@ -50,6 +50,7 @@ GICD, GICD_SIZE = 0x10101000, 0x1000
 GICC, GICC_SIZE = 0x10102000, 0x2000
 FB, FB_SIZE = 0xcc000000, 0x1100000
 UFS_HCI, UFS_HCI_SIZE = 0x11120000, 0x8000
+S9_ECID = 0x5357454554009810    # 'SWEET' + 9810, synthetic (the sweet uses ...0001)
 A55_MPIDR = (0x000, 0x100, 0x200, 0x300)
 
 
@@ -82,6 +83,10 @@ def build(scale=3, small=False):
             assert PHYS_BASE <= a < b <= PHYS_BASE + mem_size
         set_prop(chosen, 'sweet-ram-holes', b''.join(u64(a, b) for a, b in RAM_HOLES))
     set_prop(find(root, 'pram'), 'reg', u64(PHYS_BASE + mem_size) + u64(PANIC_LOG_SIZE))
+    # Own synthetic ECID -> own IOPlatformUUID. MobileGestalt's disk cache is
+    # keyed by build + UUID only: a new UUID makes it recompute (boots before
+    # the D22AP /product node existed cached answers without artwork traits).
+    set_prop(chosen, 'unique-chip-id', struct.pack('<Q', S9_ECID))
 
     cpus = find(root, 'cpus')
     a55 = []
