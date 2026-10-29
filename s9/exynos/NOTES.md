@@ -929,3 +929,6 @@ Tools: SystemOS cryptex `F:\ios-s9-ipsw\20H392\087-86593-047.dmg` mounted read-o
 - A raw grep of USERDATA (dd | grep -a for the tweak's log lines) was started from TWRP to see whether v2 ran in SpringBoard; it outlived the 10-minute tool timeout and kept running in the background.
 - S9CISoft v3 built: s9-ios-tools run 40877629220 (success), `s9/out/ios-tools-cisoft3/S9CISoft.dylib` sha256 f55ef728..., staged in s9/jailbreak/jb/. Not in the image yet.
 
+- update-tweaks-wsl.sh run by the user with S9CISoft v3: ElleKit image sha256 **6b408b593b061fc60413423d6fc31c158bec4fbad923596e27b17cf3acffeb0c**. Not written to the phone yet.
+- **Phone hot (user, 2026-10-29):** cause = the raw USERDATA grep (dd 16 GB | grep -a on the phone's CPU) left running ~40 min in TWRP. Stopped (TaskStop + pkill); afterwards TWRP thermal zones BIG 49 C, LITTLE 51 C, G3D 49 C, battery 44.8 C, cpu0 598 MHz, cpu4 962 MHz. Do not run long dd|grep jobs on the phone again; search a pulled copy instead.
+  - Separate concern (not measured): under iOS the kernel sets the A55s to 1794 MHz (sweetcpufreq) with no thermal management of its own; protection then relies on the APM firmware / hardware trips. If iOS runs hot, try sweetcpufreq=1456000.
