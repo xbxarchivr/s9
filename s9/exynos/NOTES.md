@@ -965,3 +965,10 @@ Research (observed in sources): panel lcdtype 9503811 = 0x910443 = Samsung's `s6
 
 - **Brightness WORKS on the Exynos S9 (user, boot-ios14, 2026-10-29): the screen came up dimmer (sweetbl=200 at framebuffer start) and the Control Center brightness slider works.** AOR-only dimming over the DSIM command FIFO + AppleARMBacklight nub (0113). Not yet read from the log: the exact setProperties shape iOS sends (SWEET BL: setProperties ...). Boot images can drop sweetbl (iOS sets the level itself). Remaining requests: RAM 4 GB, audio, Wi-Fi.
 
+
+## RAM 4 GB: patch 0114 + `exynos/mkadt.py --ram4g` (written 2026-10-29, not built)
+
+- How it worked (0104, observed): one XNU span [dram-base, +dram-size), ADT /chosen/sweet-ram-holes kept off the free list by pmap_is_bad_ram; the vm_page array must be contiguous (arm64 derives a page's PA from its index), so hole pages keep their vm_page entries.
+- --ram4g ADT (`out/exynos/exynos-ufs-xr2-4g.adt`, @2x): span 0x92000000-0x8fff00000 (33.72 GiB of address space) with an extra hole 0xf0000000-0x880000000; RAM for XNU 3.31 GiB (was ~1.3). Cost: 2,209,728 16K pages -> ~101 MiB vm_page + 17 MiB pv_head. Live DT (TWRP): 2 GB bank 0x880000000+0x80000000, no reserved-memory in it.
+- 0114 (arm_vm_init.c, SWEET only): (1) arm_vm_physmap_init splits "rest of physmem" around ADT holes >= 1 GB so the ~30 GB with no RAM is never mapped (a speculative access to Normal memory with nothing behind it can SError); (2) sweet_ram_hole_bytes() subtracted from mem_actual (-> max_mem_actual / hw.memsize), max_mem and sane_size, so iOS sees ~3.3 GB, not ~34 GB. mem_size/gPhysSize stay the span (physmap, pv tables). DT is available there (PE_init_platform(FALSE) runs before arm_vm_init).
+- Known residual risk: start.s's bootstrap V=P/KVA mappings cover memSize (whole span incl. the hole) with 32 MB L2 blocks until arm_vm_init switches tables (one L2 page per mapping: 64 GB per L1 with 16K pages, so no table overflow).

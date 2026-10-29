@@ -13,6 +13,12 @@ was read on the G960F by the shim stages X1-X3 (exynos/NOTES.md):
            (~0x800a0000), the DTB (0x8a000000), zswap_debug 0x91300000; above:
            modem_if from 0xf0000000. --small: the old 472 MB window, no holes.
            The panic log is carved off the top of the span.
+           --ram4g: the span runs on to the end of the 2 GB bank at
+           0x880000000 (0x92000000-0x900000000, ~34 GB of address space),
+           with one more hole 0xf0000000-0x880000000 (modem/abox/exynos_ss/
+           fimc carve-outs, then no RAM at all). Kernel patch 0114 keeps
+           holes of 1 GB or more out of the physmap and reports RAM without
+           the holes. Per-page tables still cover the span (~2.2 M pages).
   CPUs     the four Cortex-A55 only (MIDR 0x410FD051, 16K yes). reg = real
            MPIDR affinity 0x000/0x100/0x200/0x300 (MT set, core in Aff1), as
            on the SDM845 tree; psci-id = the /cpus reg PSCI 0.1 CPU_ON wants
@@ -35,6 +41,8 @@ u32, u64, cstr, node = base.u32, base.u64, base.cstr, base.node
 
 PHYS_BASE, MEM_TOP = 0x92000000, 0xf0000000
 SMALL_MEM_TOP = 0xaf800000
+RAM4G_MEM_TOP = 0x900000000     # end of the 2 GB bank at 0x880000000
+RAM4G_HOLE = (0xf0000000, 0x880000000)
 # [start, end) inside the span that XNU must never allocate (pmap_is_bad_ram)
 RAM_HOLES = (
     (0xaf800000, 0xb1800000),   # removed-dma-pool, 32 MB
@@ -70,19 +78,20 @@ def set_prop(n, name, value):
     n.props.append((name, 0, value))
 
 
-def build(scale=3, small=False):
+def build(scale=3, small=False, ram4g=False):
     root = base.build(scale=scale)
     soc = base.SOC_BASE
 
-    top = SMALL_MEM_TOP if small else MEM_TOP
+    top = SMALL_MEM_TOP if small else RAM4G_MEM_TOP if ram4g else MEM_TOP
     mem_size = top - PHYS_BASE - PANIC_LOG_SIZE
     chosen = find(root, 'chosen')
     set_prop(chosen, 'dram-base', u64(PHYS_BASE))
     set_prop(chosen, 'dram-size', u64(mem_size))
     if not small:
-        for a, b in RAM_HOLES:
+        holes = RAM_HOLES + ((RAM4G_HOLE,) if ram4g else ())
+        for a, b in holes:
             assert PHYS_BASE <= a < b <= PHYS_BASE + mem_size
-        set_prop(chosen, 'sweet-ram-holes', b''.join(u64(a, b) for a, b in RAM_HOLES))
+        set_prop(chosen, 'sweet-ram-holes', b''.join(u64(a, b) for a, b in holes))
     set_prop(find(root, 'pram'), 'reg', u64(PHYS_BASE + mem_size) + u64(PANIC_LOG_SIZE))
     # Own synthetic ECID -> own IOPlatformUUID. MobileGestalt's disk cache is
     # keyed by build + UUID only: a new UUID makes it recompute (boots before
@@ -128,7 +137,8 @@ def build(scale=3, small=False):
 
 
 if __name__ == '__main__':
-    root = build(scale=2 if '--scale2' in sys.argv else 3, small='--small' in sys.argv)
+    root = build(scale=2 if '--scale2' in sys.argv else 3, small='--small' in sys.argv,
+                 ram4g='--ram4g' in sys.argv)
     blob = adt.serialize(root)
     open(sys.argv[1], 'wb').write(blob)
     if '--dump' in sys.argv:

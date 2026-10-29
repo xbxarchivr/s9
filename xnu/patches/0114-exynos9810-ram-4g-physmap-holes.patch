@@ -1,0 +1,104 @@
+diff --git a/osfmk/arm64/arm_vm_init.c b/osfmk/arm64/arm_vm_init.c
+index 7bcb94e..3b5bec1 100644
+--- a/osfmk/arm64/arm_vm_init.c
++++ b/osfmk/arm64/arm_vm_init.c
+@@ -1482,6 +1482,30 @@ SECURITY_READ_ONLY_LATE(static unsigned int) ptov_index = 0;
+ #define ROUND_L1(addr) (((addr) + ARM_TT_L1_OFFMASK) & ~(ARM_TT_L1_OFFMASK))
+ #define ROUND_TWIG(addr) (((addr) + ARM_TT_TWIG_OFFMASK) & ~(ARM_TT_TWIG_OFFMASK))
+ 
++#if defined(SWEET)
++/* bytes of ADT /chosen/sweet-ram-holes inside the span (pmap.c keeps their pages off the free list) */
++static uint64_t
++sweet_ram_hole_bytes(void)
++{
++	DTEntry chosen;
++	void const *prop;
++	unsigned int size;
++	uint64_t total = 0;
++	if (SecureDTLookupEntry(NULL, "/chosen", &chosen) != kSuccess ||
++	    SecureDTGetProperty(chosen, "sweet-ram-holes", &prop, &size) != kSuccess ||
++	    (size % (2 * sizeof(uint64_t))) != 0) {
++		return 0;
++	}
++	const uint64_t *h = (const uint64_t *)prop;
++	for (unsigned int i = 0; i < size / (2 * sizeof(uint64_t)); i++) {
++		if (h[2 * i] >= gPhysBase && h[2 * i + 1] > h[2 * i] && h[2 * i + 1] <= gPhysBase + gPhysSize) {
++			total += h[2 * i + 1] - h[2 * i];
++		}
++	}
++	return total;
++}
++#endif
++
+ static void
+ arm_vm_physmap_slide(ptov_table_entry *temp_ptov_table, vm_map_address_t orig_va, vm_size_t len, int pte_prot_APX, unsigned granule)
+ {
+@@ -1600,8 +1624,43 @@ arm_vm_physmap_init(boot_args *args)
+ 	arm_vm_page_granular_RWNX(end_kern, phystokv(args->topOfKernelData) - end_kern,
+ 	    ARM64_GRANULE_ALLOW_BLOCK | ARM64_GRANULE_ALLOW_HINT); /* Device Tree (if not locked down), RAM Disk (if present), bootArgs */
+ 
++#if defined(SWEET)
++	/*
++	 * Galaxy S9 Exynos 9810 with all 4 GB: the span runs from 0x92000000 up to
++	 * the 2 GB bank at 0x880000000, across a ~30 GB range with no RAM behind it
++	 * (ADT /chosen/sweet-ram-holes, also kept off the free list by
++	 * pmap_is_bad_ram). Do not put such a range in the physmap: a speculative
++	 * access to a Normal mapping with nothing behind it can end in an SError.
++	 * Holes of 1 GB or more (ascending, as exynos/mkadt.py writes them) split
++	 * the rest of physmem into separate PTOV entries; smaller holes stay
++	 * mapped, as before.
++	 */
++	{
++		pmap_paddr_t start = args->topOfKernelData;
++		DTEntry chosen;
++		void const *prop;
++		unsigned int size;
++		if (SecureDTLookupEntry(NULL, "/chosen", &chosen) == kSuccess &&
++		    SecureDTGetProperty(chosen, "sweet-ram-holes", &prop, &size) == kSuccess &&
++		    (size % (2 * sizeof(uint64_t))) == 0) {
++			const uint64_t *h = (const uint64_t *)prop;
++			for (unsigned int i = 0; i < size / (2 * sizeof(uint64_t)); i++) {
++				pmap_paddr_t hs = h[2 * i], he = h[2 * i + 1];
++				if (he - hs < (1ULL << 30) || hs <= start || he >= real_avail_end) {
++					continue;
++				}
++				arm_vm_physmap_slide(temp_ptov_table, start - gPhysBase + gVirtBase, hs - start, AP_RWNA,
++				    ARM64_GRANULE_ALLOW_BLOCK | ARM64_GRANULE_ALLOW_HINT);
++				start = he;
++			}
++		}
++		arm_vm_physmap_slide(temp_ptov_table, start - gPhysBase + gVirtBase, real_avail_end - start, AP_RWNA,
++		    ARM64_GRANULE_ALLOW_BLOCK | ARM64_GRANULE_ALLOW_HINT); // rest of physmem
++	}
++#else
+ 	arm_vm_physmap_slide(temp_ptov_table, (args->topOfKernelData - gPhysBase + gVirtBase),
+ 	    real_avail_end - args->topOfKernelData, AP_RWNA, ARM64_GRANULE_ALLOW_BLOCK | ARM64_GRANULE_ALLOW_HINT); // rest of physmem
++#endif
+ 
+ 	assert((temp_ptov_table[ptov_index - 1].va + temp_ptov_table[ptov_index - 1].len) <= physmap_end);
+ 
+@@ -1886,6 +1945,12 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+ 	gPhysSize = mem_size = ((gPhysBase + args->memSize) & ~PAGE_MASK) - gPhysBase;
+ 
+ 	mem_actual = args->memSizeActual ? args->memSizeActual : mem_size;
++#if defined(SWEET)
++	/* the span includes ADT holes (4 GB layout: ~30 GB of them); report real RAM */
++	if (mem_actual == mem_size) {
++		mem_actual -= sweet_ram_hole_bytes();
++	}
++#endif
+ 
+ 	if ((memory_size != 0) && (mem_size > memory_size)) {
+ 		mem_size = memory_size;
+@@ -2252,6 +2317,11 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+ 
+ 	sane_size = mem_size - (avail_start - gPhysBase);
+ 	max_mem = mem_size;
++#if defined(SWEET)
++	/* size kernel tables by real RAM, not the span with its holes */
++	sane_size -= sweet_ram_hole_bytes();
++	max_mem -= sweet_ram_hole_bytes();
++#endif
+ 	vm_kernel_slid_base = segLOWESTTEXT;
+ 	// vm_kernel_slide is set by arm_init()->arm_slide_rebase_and_sign_image()
+ 	vm_kernel_stext = segTEXTB;
