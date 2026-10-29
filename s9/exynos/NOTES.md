@@ -885,3 +885,4 @@ Steps:
 
 - boot-ios11 flashed 2026-10-29 with verified readback, rebooted into iOS. Result pending.
 
+- **boot-ios11 result (observed, s9/logs/boot-ios11.txt): @2x works and is faster.** No SpringBoard crash; crashes only driverkitd x1, PosterBoard x1 (both seen on every boot), MobileSMS x1. Dirty-region coordinates now in 828-px space (e.g. 446,580 128x128). Present windows: 5.5 (first boot, caches), 11.7, 16.2, 7.4, 13.5, **21.7, 20.5 fps**; present avg 2.0-6.7 ms (max 12-14 ms) vs boot-ios10b 7.5-13 ms (max 17 ms) and 5.4-9.9 fps. The best windows sit at the 20 Hz cap (sweetfb_hz=20), so the cap now limits: next try sweetfb_hz=30. Layout (status bar / notch) not yet confirmed by the user.
