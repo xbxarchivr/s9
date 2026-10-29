@@ -950,3 +950,5 @@ Tools: SystemOS cryptex `F:\ios-s9-ipsw\20H392\087-86593-047.dmg` mounted read-o
 
 - boot-ios13 flashed 2026-10-29 with verified readback, rebooted into iOS. TWRP reference just before: capacity 50 %, voltage_now 3787000 uV, current_now -167, status Charging (Fast), temp 34.8 C.
 
+- **Battery WORKS on the Exynos S9 (user, boot-ios13, 2026-10-29): iOS shows about 50 %, matching TWRP's 50 % just before.** MAX77705 fuel gauge over bit-banged CMGP gpm14/gpm15 (0112). Not yet checked in the log: original pin CON values, charging indicator, current/voltage values iOS publishes. Next requested feature: brightness.
+
