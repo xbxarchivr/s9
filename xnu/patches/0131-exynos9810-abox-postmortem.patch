@@ -1,0 +1,109 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index d2e8ead..4e12c41 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -1241,6 +1241,96 @@ abox_fault_dump(vm_offset_t sram, vm_offset_t sfr)
+ 	printf("SWEET ABOX: live L2C_STATUS %#x\n", abox_sp(sfr + 0x2c40));
+ }
+ 
++/*
++ * boot-ios31: with all ext_bin files loaded Calliope still faults: DFSR
++ * 0x805 (write, level-1 translation fault in its own MMU) at 0x0a2000xx,
++ * the offset changing per boot like a text pointer. Its page tables are
++ * built at run time (none in the images), so after the fault scan its
++ * memory: 16 KB-aligned ARMv7 short-descriptor L1 tables (entries with
++ * bits[1:0] 01 page table / 10 section) and printable text the firmware
++ * wrote outside the loaded images (its log: "[MAIN] ...", "VSS ...").
++ */
++static void
++abox_scan_words(vm_offset_t va, uint32_t len, uint32_t where, bool dram)
++{
++	/* page tables */
++	for (uint32_t t = 0; t + 0x4000 <= len; t += 0x4000) {
++		unsigned valid = 0, zero = 0;
++		for (uint32_t i = 0; i < 4096; i++) {
++			uint32_t e = abox_sp(va + t + 4 * i);
++			if (e == 0) {
++				zero++;
++			} else if ((e & 3) == 1 || (e & 3) == 2) {
++				valid++;
++			}
++		}
++		if (valid >= 8 && valid + zero >= 4090) {
++			printf("SWEET ABOX: L1 table? %s+%#x: %u entries\n", dram ? "dram" : "sram", where + t, valid);
++			unsigned shown = 0;
++			for (uint32_t i = 0; i < 4096 && shown < 48; i++) {
++				uint32_t e = abox_sp(va + t + 4 * i);
++				if (e) {
++					printf("SWEET ABOX:   VA %#010x -> %#010x\n", i << 20, e);
++					shown++;
++				}
++			}
++		}
++	}
++}
++
++static void
++abox_scan_text(vm_offset_t va, uint32_t len, uint32_t where, bool dram, unsigned *budget)
++{
++	char s[96];
++	uint32_t run = 0, start = 0;
++	for (uint32_t o = 0; o < len && *budget; o += 4) {
++		uint32_t w = abox_sp(va + o);
++		for (int k = 0; k < 4; k++) {
++			char c = (char)(w >> (8 * k));
++			if (c >= 0x20 && c < 0x7f) {
++				if (run == 0) {
++					start = o + k;
++				}
++				if (run < sizeof(s) - 1) {
++					s[run] = c;
++				}
++				run++;
++			} else {
++				if (run >= 16) {
++					s[run < sizeof(s) - 1 ? run : sizeof(s) - 1] = 0;
++					printf("SWEET ABOX: text %s+%#x: %s\n", dram ? "dram" : "sram", where + start, s);
++					(*budget)--;
++				}
++				run = 0;
++			}
++		}
++	}
++}
++
++static void
++abox_postmortem(vm_offset_t sram, uint32_t sram_len, uint32_t dram_len)
++{
++	unsigned budget = 60;
++	/* SRAM past the loaded image, below the IPC area */
++	uint32_t s0 = (sram_len + 0x3fffu) & ~0x3fffu;
++	abox_scan_words(sram + s0, 0x30000 - s0, s0, false);
++	abox_scan_text(sram + sram_len, 0x30000 - sram_len, sram_len, false, &budget);
++	/* DRAM firmware area, 1 MB at a time; text only past the image and outside the ext_bin span */
++	for (uint32_t w = 0; w < ABOX_DRAM_FW_SIZE; w += ABOX_RM_WIN) {
++		vm_offset_t va = ml_io_map_unmappable(ABOX_RMEM_PA + ABOX_RM_DRAM + w, ABOX_RM_WIN, SWEET_WIMG_IO);
++		abox_scan_words(va, ABOX_RM_WIN, w, true);
++		uint32_t lo = w, hi = w + ABOX_RM_WIN;
++		if (lo < dram_len) {
++			lo = dram_len < hi ? dram_len : hi;
++		}
++		if (lo < hi && !(lo >= 0x4d0000 && hi <= 0x800000)) {
++			abox_scan_text(va + (lo - w), hi - lo, lo, true, &budget);
++		}
++		ml_io_unmap(va, ABOX_RM_WIN);
++	}
++	printf("SWEET ABOX: postmortem done (%u text lines left)\n", budget);
++}
++
+ static void
+ exy_abox_boot(void)
+ {
+@@ -1383,6 +1473,7 @@ exy_abox_boot(void)
+ 		}
+ 		if (id == 1 && type == 0xfa) {          /* ABOX_REPORT_FAULT */
+ 			abox_fault_dump(sram, sfr);
++			abox_postmortem(sram, sram_len, dram_len);
+ 			return;
+ 		}
+ 		touch_wait(100);
