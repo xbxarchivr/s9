@@ -977,3 +977,19 @@ Research (observed in sources): panel lcdtype 9503811 = 0x910443 = Samsung's `s6
 - boot-ios15 (4 GB) flashed 2026-10-29 with verified readback, rebooted into iOS. Result pending.
 
 - **4 GB WORKS (boot-ios15, log s9/logs/boot-ios15.txt, observed):** booted to the lock screen (user); `vm_page_bootstrap: 205359 free pages, 11505 wired pages` = 3.31 GiB managed / 3.13 GiB free (1.3 GB layout, boot-ios12/13: 83030 free + 13162 wired = 1.47 / 1.27 GiB). pmap_startup 300 ms (was 16 ms) for the larger vm_page array. Crashes: driverkitd x1 only (as on every boot). No panic/SError. Not yet checked: hw.memsize as iOS reports it (should be ~3.3 GB), long use touching the high bank.
+
+## Audio: hardware map and staged plan (researched 2026-10-29, nothing built)
+
+Stock DT (observed):
+- ABOX `/abox@0x17C50000` (samsung,abox): sfr 0x17C50000, sysreg 0x17C10000, sram 0x17D00000 (0x31000); 8 RDMA (0x17C51000+0x100*n), 5 WDMA (0x17C52000+), 4 UAIF (0x17C50500/510/520/530), DSIF; own GIC `abox_gic@0x17CF0000` (ABOX has its own CPU running Samsung firmware, ext_bin@0/1); IPC in SRAM (tx 0x30000, rx 0x30300, acks 0x302FC/0x305FC); power domain, clocks pll/cpu/audif/dmic/bus, `iommus` (SysMMU in front of its DMA); reserved abox_rmem 0xFB200000 (40 MB). In Samsung's driver PCM buffers are configured through IPC to that firmware.
+- Codec Cirrus **CS47L93** on `spi@10470000` (cs47l93@0, own ADSP + firmware, accessory detect, micbias); reset pin pinctrl@10430000 codec-reset, IRQ codec-irq (ALIVE). Clock: `/sound` clocks xclkout (PMU clock out), fll1-refclk 26 MHz, sysclk 98.304 MHz.
+- Speaker amp **MAX98512** on `hsi2c@108C0000` addr 0x39 (pins `max98512-i2c` in pinctrl@10830000), sysclk 12.288 MHz, mono.
+- Card `/sound` (samsung,star-madera): uaif@0 -> codec AIF1, uaif@1 -> MAX98512 (routing `SPEAKER <- HiFi Playback`), uaif@2 -> codec AIF3, uaif@3 -> BT; RECEIVER <- HPOUT3L/R, HEADPHONE <- HPOUT2L/R. So: loudspeaker = ABOX UAIF1 -> amp directly; earpiece/headphones = codec.
+- iOS side exists: s9/ios-tools/S9Audio.c (AudioServerPlugIn, 48 kHz stereo; today UDP to the PC). For the phone: write the mixed buffers to a kernel PCM device instead.
+
+Staged plan:
+1. Probe, read-only, kernel boot-arg: MAX98512 revision over bit-banged I2C, CS47L93 device ID over SPI (USI SPI or bit-bang), ABOX power-domain status/version register.
+2. First sound without ABOX: CS47L93 tone generator -> HPOUT3 (earpiece) or HPOUT2 (headphones); needs xclkout 26 MHz + codec init.
+3. ABOX: power domain + PLL_AUD + firmware (calliope, from the vendor partition) + IPC + SysMMU, RDMA -> UAIF1 -> MAX98512 -> loudspeaker.
+4. iOS: kernel PCM ring buffer + S9Audio writing to it.
+Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
