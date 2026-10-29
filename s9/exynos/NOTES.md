@@ -1066,3 +1066,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 
 - **need_smc = DTZPC, not register access (observed in sources):** exynos-pd.c reads need_smc -> cal_pd_set_smc_id -> pmucal_local.c: after a PD power-on, `exynos_pd_tz_restore(need_smc)`; exynos-el3_mon.c: `exynos_smc(SMC_CMD_PREAPRE_PD_ONOFF = 0x82000410, EXYNOS_WAKEUP_PD_DOWN = 1, addr, 0)` (save = EXYNOS_GET_IN_PD_DOWN 0 before power-off). S-Boot powered AUD on but never asked EL3 to restore the DTZPC, so the ABOX sysreg is secure-only -> the boot-ios22 panic.
 - **Patch 0122 (written):** sweetaudio=3 issues smc(0x82000410, 1, 0x17c10204, 0) (flushed log line first), logs the return, then the flushed sysreg and SysMMU reads as before.
+- **0122 compiled** (run 40919984471, success): `out/exynos/xnu19/kernel.development.sweet` sha256 bbbb488c... **Boot image `out/exynos/boot-ios23.img`** (sha256 e1981f5a...) = boot-ios22 cmdline (sweetaudio=3) with the 0122 kernel (DTZPC restore before the sysreg read). Not flashed. Fallback: boot-ios15.
+
