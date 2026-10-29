@@ -500,6 +500,50 @@ static int take_report(int i)
 	return 1;
 }
 
+/*
+ * X1.6: the M3 cluster (CPUCL1). CPU_ON returns 0 but the cores never run
+ * (X1.4/X1.5). Samsung's kernel runs pmucal_lpm_init from its clock driver
+ * before SMP; its CPUCL1 entries (flexpmu_cal_system_exynos9810.h) are six
+ * read-modify-writes in the PMU, and the S9+ mainline port needs exactly
+ * these before the first M3 CPU_ON (exynos/M3-POWER.md). Done once, before
+ * the first /cpus reg 0x1xx core; PMU registers reset with the next boot.
+ */
+#define PMU		0x14060000UL
+static const struct { uint32_t off, mask, val; } m3_lpm[] = {
+	{ 0x1088, 0xff000000u, 0x8d000000u },	/* CPU_QCH_CLUSTER1_NONCPU_SYS_PWR_REG */
+	{ 0x2114, 0x3, 0x2 },			/* MEMORY_CLUSTER1_CPU0_OPTION */
+	{ 0x2180, 0x3, 0x2 },			/* MEMORY_CLUSTER1_CPU1_OPTION */
+	{ 0x21ec, 0x3, 0x2 },			/* MEMORY_CLUSTER1_CPU2_OPTION */
+	{ 0x2258, 0x3, 0x2 },			/* MEMORY_CLUSTER1_CPU3_OPTION */
+	{ 0x2384, 0x3, 0x2 },			/* MEMORY_CLUSTER1_NONCPU_OPTION */
+};
+/* CLUSTER1_CPU0..3_STATUS, CLUSTER1_NONCPU_STATUS (low nibble 0xF = powered) */
+static const uint32_t m3_status[] = { 0x2004, 0x200c, 0x2014, 0x201c, 0x2044 };
+static struct {
+	int done;
+	uint32_t before[6], after[6];
+	uint32_t st0[5], st1[5];	/* status before the writes, after all CPU_ONs */
+	uint32_t rsc, mbox;		/* RESET_SEQUENCER_CONFIGURATION, MAILBOX_APM2AP */
+} m3;
+
+static void m3_prepare(void)
+{
+	if (m3.done)
+		return;
+	m3.done = 1;
+	for (int k = 0; k < 5; k++)
+		m3.st0[k] = rd32(PMU + m3_status[k]);
+	m3.rsc = rd32(PMU + 0x500);
+	m3.mbox = rd32(0x14100010UL);
+	for (int k = 0; k < 6; k++) {
+		uint32_t v = rd32(PMU + m3_lpm[k].off);
+		m3.before[k] = v;
+		wr32(PMU + m3_lpm[k].off, (v & ~m3_lpm[k].mask) | m3_lpm[k].val);
+		dsb();
+		m3.after[k] = rd32(PMU + m3_lpm[k].off);
+	}
+}
+
 /* Each core's row goes on screen before its CPU_ON, so a hang names the call. */
 static void probe_cpus(int row)
 {
@@ -511,6 +555,8 @@ static void probe_cpus(int row)
 		struct cpu *c = &x.cpu[i];
 		volatile struct report *r = &rep[i];
 		con_set_row(row + i * CPU_ROW_H);
+		if ((c->reg & 0xf00) == 0x100)
+			m3_prepare();
 		if ((c->reg & 0xffffff) == self) {
 			cpu_read(c);
 			c->state = CPU_SELF;
@@ -542,6 +588,8 @@ static void probe_cpus(int row)
 	for (int i = 0; i < x.ncpu; i++)
 		if (x.cpu[i].state == CPU_WAIT && take_report(i))
 			x.cpu[i].late = 1;
+	for (int k = 0; k < 5; k++)
+		m3.st1[k] = rd32(PMU + m3_status[k]);
 	/* No /cpus in the DT: at least report the boot core. */
 	if (!found_self && x.ncpu < NR_CPUS) {
 		struct cpu *c = &x.cpu[x.ncpu++];
@@ -641,7 +689,7 @@ static void draw(int final, int cpu_y)
 		return;
 	}
 	con_clear(GREY);
-	con_title("EXYNOS X1.5 RUNS");
+	con_title("EXYNOS X1.6 RUNS");
 	bands();
 
 	con_str("MODEL", x.model[0] ? x.model : "(no DTB)");
@@ -709,7 +757,7 @@ static void draw(int final, int cpu_y)
 static void draw_final(int cpu_y)
 {
 	con_set_row(24);	/* con.c TOP */
-	con_title("EXYNOS X1.5: OK ");
+	con_title("EXYNOS X1.6: OK ");
 	con_set_row(cpu_y);
 	for (int i = 0; i < x.ncpu; i++)
 		cpu_row(i);
@@ -730,6 +778,24 @@ static void draw_final(int cpu_y)
 		}
 		b[NR_CPUS] = 0;
 		con_str("SLOTS", b);
+	}
+	if (m3.done) {
+		char b[96], *p;
+		for (int k = 0; k < 6; k++) {
+			p = put_hex(b, m3_lpm[k].off, 4);
+			p = put_hex(put(p, " "), m3.before[k], 8);
+			put_hex(put(p, " -> "), m3.after[k], 8);
+			con_str(k ? "" : "M3 PMU", b);
+		}
+		for (int k = 0; k < 5; k++) {
+			p = put_hex(b, m3_status[k], 4);
+			p = put_hex(put(p, " "), m3.st0[k], 8);
+			put_hex(put(p, " -> "), m3.st1[k], 8);
+			con_str(k ? "" : "M3 STAT", b);
+		}
+		p = put_hex(put(b, "RSC "), m3.rsc, 8);
+		put_hex(put(p, " APM2AP "), m3.mbox, 8);
+		con_str("M3 MISC", b);
 	}
 	con_skip();
 }
