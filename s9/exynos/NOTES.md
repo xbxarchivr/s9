@@ -1004,3 +1004,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 
 - **0116 compiled** (run 40902283550, success): `out/exynos/xnu13/kernel.development.sweet` sha256 1fb42d21... **Boot image `out/exynos/boot-ios17.img`** (sha256 27b10fdc...) = boot-ios16 cmdline (4 GB, sweetaudio=1) with the 0116 kernel. Not flashed.
 
+- boot-ios17 flashed 2026-10-29 with verified readback, rebooted into iOS. Result pending.
+
