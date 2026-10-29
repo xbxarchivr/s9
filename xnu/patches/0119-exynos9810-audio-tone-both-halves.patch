@@ -1,0 +1,80 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index a3c308b..198afc2 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -816,11 +816,29 @@ madera_wr(const struct aspi *b, uint32_t reg, uint32_t val)
+ #define MADERA_R_OUT3LMIX_SRC1    0x6a0
+ #define MADERA_R_OUT3LMIX_VOL1    0x6a1
+ #define MADERA_R_IRQ1_RAW1        0x1880
++#define MADERA_R_DAC_VOL3R        0x425
++#define MADERA_R_OUT3RMIX_SRC1    0x6a8
++#define MADERA_R_OUT3RMIX_VOL1    0x6a9
++#define MADERA_R_HP_CTRL_3L       0x229
++
++/* drivers/mfd/cs47l92-tables.c cs47l92_reva_16_patch, applied by Linux after every reset */
++static const uint16_t cs47l92_reva_16_patch[][2] = {
++	{ 0x3A2, 0x2C29 }, { 0x3A3, 0x0E00 }, { 0x281, 0x0000 }, { 0x282, 0x0000 },
++	{ 0x4EA, 0x0100 }, { 0x22B, 0x0000 }, { 0x4A0, 0x0080 }, { 0x4A1, 0x0000 },
++	{ 0x4A2, 0x0000 }, { 0x180B, 0x033F }, { 0x190B, 0x033F }, { 0x442, 0x0304 },
++	{ 0x34C, 0x0003 }, { 0x124, 0x0C49 }, { 0x120, 0x0345 }, { 0x120, 0x0305 },
++	{ 0x4FA, 0x5064 }, { 0x1300, 0x050E }, { 0x1302, 0x0101 }, { 0x1380, 0x02E0 },
++	{ 0x1381, 0xF942 }, { 0x1382, 0x04CE }, { 0x1383, 0xFF06 }, { 0x1390, 0x0304 },
++	{ 0x1391, 0xF8FF }, { 0x1392, 0x04F3 }, { 0x1393, 0xFF00 }, { 0x13A0, 0x02E0 },
++	{ 0x13A1, 0xF942 }, { 0x13A2, 0x04CE }, { 0x13A3, 0xFF06 }, { 0x13B0, 0x0304 },
++	{ 0x13B1, 0xF8FF }, { 0x13B2, 0x04F3 }, { 0x13B3, 0xFF00 }, { 0x412, 0x0005 },
++	{ 0x41A, 0x0005 }, { 0x422, 0x0005 },
++};
+ 
+ static void
+ exy_audio_tone(const struct aspi *b)
+ {
+-	uint32_t secs = 3;
++	uint32_t secs = 5;
+ 	(void)PE_parse_boot_argn("sweetaudiotone", &secs, sizeof(secs));
+ 	vm_offset_t pmu = ml_io_map(EXY_PMU_PA, PAGE_SIZE);
+ 	if (!pmu) {
+@@ -839,23 +857,38 @@ exy_audio_tone(const struct aspi *b)
+ 	}
+ 	printf("SWEET AUDIO: tone: CLKOUT0 %#x -> %#x, codec boot done after %d ms\n",
+ 	    ck, touch_rd(pmu, EXY_PMU_CLKOUT0), boot);
++	for (unsigned i = 0; i < sizeof(cs47l92_reva_16_patch) / sizeof(cs47l92_reva_16_patch[0]); i++) {
++		madera_wr(b, cs47l92_reva_16_patch[i][0], cs47l92_reva_16_patch[i][1]);
++	}
+ 	madera_wr(b, MADERA_R_SYSCLK1, 2u << 8 | 0x40);         /* MCLK1, "24.576", SYSCLK_ENA */
+ 	madera_wr(b, MADERA_R_SAMPLE_RATE1, 0x03);              /* 48 kHz */
+ 	madera_wr(b, MADERA_R_TONE1, 0x0001);                   /* TONE1_ENA */
++	/*
++	 * The receiver sits across HPOUT3L and HPOUT3R (DT routing RECEIVER <-
++	 * HPOUT3L, HPOUT3R; OUT3 mono = differential), so both halves are
++	 * powered, as DAPM would (boot-ios19 with OUT3L alone: silent).
++	 */
+ 	madera_wr(b, MADERA_R_OUT3LMIX_SRC1, 0x04);             /* Tone Generator 1 */
+ 	madera_wr(b, MADERA_R_OUT3LMIX_VOL1, 0x34u << 1);       /* -12 dB */
+-	madera_wr(b, MADERA_R_DAC_VOL3L, 0x0200 | 0x68);        /* VU, unmuted, -12 dB */
++	madera_wr(b, MADERA_R_OUT3RMIX_SRC1, 0x04);
++	madera_wr(b, MADERA_R_OUT3RMIX_VOL1, 0x34u << 1);
++	madera_wr(b, MADERA_R_DAC_VOL3L, 0x68);                 /* unmuted, -12 dB */
++	madera_wr(b, MADERA_R_DAC_VOL3R, 0x0200 | 0x68);        /* VU latches both */
+ 	madera_wr(b, MADERA_R_OUT_PATH3L, madera_rd(b, MADERA_R_OUT_PATH3L) | 0x1000);  /* OUT3_MONO */
+ 	uint32_t en = madera_rd(b, MADERA_R_OUT_ENABLES1) & ~0x8000u;  /* EP_SEL 0: HPOUT3 */
+-	madera_wr(b, MADERA_R_OUT_ENABLES1, en | 0x0020);       /* OUT3L_ENA */
++	madera_wr(b, MADERA_R_OUT_ENABLES1, en | 0x0030);       /* OUT3L_ENA | OUT3R_ENA */
+ 	delay(40000);
+-	printf("SWEET AUDIO: tone on: SYSCLK1 %#x RATE1 %#x TONE1 %#x MIX %#x/%#x DAC3L %#x PATH3L %#x OUTEN %#x IRQRAW %#x\n",
++	printf("SWEET AUDIO: tone on: SYSCLK1 %#x RATE1 %#x TONE1 %#x MIX %#x/%#x %#x/%#x DAC3 %#x/%#x PATH3L %#x OUTEN %#x HPCTRL3L %#x\n",
+ 	    madera_rd(b, MADERA_R_SYSCLK1), madera_rd(b, MADERA_R_SAMPLE_RATE1), madera_rd(b, MADERA_R_TONE1),
+ 	    madera_rd(b, MADERA_R_OUT3LMIX_SRC1), madera_rd(b, MADERA_R_OUT3LMIX_VOL1),
+-	    madera_rd(b, MADERA_R_DAC_VOL3L), madera_rd(b, MADERA_R_OUT_PATH3L),
+-	    madera_rd(b, MADERA_R_OUT_ENABLES1), madera_rd(b, MADERA_R_IRQ1_RAW1));
++	    madera_rd(b, MADERA_R_OUT3RMIX_SRC1), madera_rd(b, MADERA_R_OUT3RMIX_VOL1),
++	    madera_rd(b, MADERA_R_DAC_VOL3L), madera_rd(b, MADERA_R_DAC_VOL3R), madera_rd(b, MADERA_R_OUT_PATH3L),
++	    madera_rd(b, MADERA_R_OUT_ENABLES1), madera_rd(b, MADERA_R_HP_CTRL_3L));
++	printf("SWEET AUDIO: IRQ1 raw status 1-6: %#x %#x %#x %#x %#x %#x\n",
++	    madera_rd(b, MADERA_R_IRQ1_RAW1), madera_rd(b, MADERA_R_IRQ1_RAW1 + 1), madera_rd(b, MADERA_R_IRQ1_RAW1 + 2),
++	    madera_rd(b, MADERA_R_IRQ1_RAW1 + 3), madera_rd(b, MADERA_R_IRQ1_RAW1 + 4), madera_rd(b, MADERA_R_IRQ1_RAW1 + 5));
+ 	touch_wait(secs * 1000u);
+-	madera_wr(b, MADERA_R_OUT_ENABLES1, madera_rd(b, MADERA_R_OUT_ENABLES1) & ~0x0020u);
++	madera_wr(b, MADERA_R_OUT_ENABLES1, madera_rd(b, MADERA_R_OUT_ENABLES1) & ~0x0030u);
+ 	delay(10000);
+ 	madera_wr(b, MADERA_R_TONE1, 0);
+ 	madera_wr(b, MADERA_R_SYSCLK1, 2u << 8);                /* SYSCLK off */

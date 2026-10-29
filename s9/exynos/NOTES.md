@@ -1026,3 +1026,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 
 - boot-ios19 (earpiece tone) flashed 2026-10-29 with verified readback, rebooted. Result pending.
 
+- **boot-ios19 RESULT: silent (user).** Log (observed): `CS47L93 register 0 = 0x6371, revision 0x1`; `CLKOUT0 0 -> 0x100, codec boot done after 0 ms`; `tone on: SYSCLK1 0x240 RATE1 0x3 TONE1 0x1 MIX 0x8004/0x68 DAC3L 0x68 PATH3L 0x1080 OUTEN 0x20 IRQRAW 0x80` - every write took (mixer bit 15 set = input active, guess), so the digital path runs and the problem is the output stage.
+- **Patch 0119 (written):** suspect = the receiver is across HPOUT3L and HPOUT3R (DT routing lists both; OUT3 mono is differential) and only OUT3L was on. Now: Linux's cs47l92_reva_16_patch (38 writes, revision 0x1 = rev A) after boot done, tone into OUT3L and OUT3R mixers (0x6A0/0x6A8), DAC 3L/3R unmuted -12 dB (VU on the R write), OUT3L_ENA | OUT3R_ENA; logs HP_CTRL_3L (0x229) and IRQ1 raw status 1-6 (0x1880-0x1885); 5 s.
