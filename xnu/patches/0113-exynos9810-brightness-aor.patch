@@ -1,0 +1,220 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index fb58e1c..07b3ef2 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -97,6 +97,7 @@ s9_panel_autorefresh(uint32_t every_te)
+ #include <IOKit/IOTimerEventSource.h>
+ #include <IOKit/IOInterruptEventSource.h>
+ #include <IOKit/system.h>
++#include <libkern/c++/OSSerialize.h>
+ #include <pexpert/pexpert.h>
+ #include <kern/clock.h>
+ #include <sys/proc.h>
+@@ -363,6 +364,197 @@ public:
+ 
+ OSDefineMetaClassAndStructors(IOMobileFramebufferUserClient, IOUserClient);
+ 
++/*
++ * Galaxy S9 Exynos: brightness. CoreBrightness (iOS 16) drives a service of
++ * class AppleARMBacklight through IODisplayParameters / brightness {min, max,
++ * value} (its strings: "AppleARMBacklight", "IODisplayParameters",
++ * "brightness", "backlight-control"...). The exact call shape is not traced
++ * yet, so setProperties takes brightness at the top level or inside
++ * IODisplayParameters and logs what it got. Boot-arg sweetbl=N (0-1000)
++ * sets a level at boot without iOS.
++ *
++ * The S6E3HA8 (panel id 0x910443 = Samsung's star_a3_s0) dims by AOR alone,
++ * gamma left as S-Boot loaded it: 0xB1 = dark lines per frame, 0x000C at full
++ * ... 0x0B76 (the vendor AOR table's dimmest). Sequence as the vendor
++ * set-bl: level-2 key F0 5A 5A, B1 hi lo, F7 03 (gamma/AOR update), F0 A5 A5,
++ * each a DCS long write through the DSIM command FIFO (dpu_9810 dsim_drv.c:
++ * payload words to 0x5C, header 0x39 | len << 8 to 0x58, then INTSRC
++ * SFR_PH_FIFO_EMPTY).
++ */
++#define EXY_DSIM_PA             0x16080000ULL
++#define EXY_DSIM_INTSRC         0x50
++#define EXY_DSIM_PH_EMPTY       (1u << 28)
++#define EXY_DSIM_PKTHDR         0x58
++#define EXY_DSIM_PAYLOAD        0x5c
++#define EXY_AOR_FULL            0x000c
++#define EXY_AOR_DIM             0x0b76
++#define SWEET_BL_MAX            1000u
++
++static vm_offset_t exy_dsim;
++static IOLock *exy_dsim_lock;
++static bool exy_dsim_failed;
++
++/* One DCS long write; 0, or -1 (no DSIM / given up) or -2 (FIFO stuck). Lock held. */
++static int
++exy_dsim_dcs_long(const uint8_t *d, unsigned n)
++{
++	volatile uint32_t *r = (volatile uint32_t *)exy_dsim;
++	if (exy_dsim == 0 || exy_dsim_failed) {
++		return -1;
++	}
++	r[EXY_DSIM_INTSRC / 4] = EXY_DSIM_PH_EMPTY;     /* write 1 to clear */
++	for (unsigned i = 0; i < n; i += 4) {
++		uint32_t w = 0;
++		for (unsigned k = 0; k < 4 && i + k < n; k++) {
++			w |= (uint32_t)d[i + k] << (8 * k);
++		}
++		r[EXY_DSIM_PAYLOAD / 4] = w;
++	}
++	r[EXY_DSIM_PKTHDR / 4] = 0x39 | (n & 0xff) << 8 | ((n >> 8) & 0xff) << 16;
++	__asm__ volatile ("dsb sy" ::: "memory");
++	for (int t = 0; t < 2000; t++) {                /* 20 ms */
++		if (r[EXY_DSIM_INTSRC / 4] & EXY_DSIM_PH_EMPTY) {
++			return 0;
++		}
++		IODelay(10);
++	}
++	exy_dsim_failed = true;
++	IOLog("SWEET BL: DSIM header FIFO never emptied (INTSRC %#x): brightness off\n",
++	    r[EXY_DSIM_INTSRC / 4]);
++	return -2;
++}
++
++/* level 0..1000; luminance ~ level^2, as AOR */
++static int
++exy_set_brightness(uint32_t level)
++{
++	if (level > SWEET_BL_MAX) {
++		level = SWEET_BL_MAX;
++	}
++	uint32_t lum = level * level / SWEET_BL_MAX;            /* 0..1000 */
++	uint32_t aor = EXY_AOR_DIM - (EXY_AOR_DIM - EXY_AOR_FULL) * lum / SWEET_BL_MAX;
++	static const uint8_t key_on[] = { 0xf0, 0x5a, 0x5a }, key_off[] = { 0xf0, 0xa5, 0xa5 };
++	static const uint8_t update[] = { 0xf7, 0x03 };
++	const uint8_t b1[] = { 0xb1, (uint8_t)(aor >> 8), (uint8_t)aor };
++	IOLockLock(exy_dsim_lock);
++	int err = exy_dsim_dcs_long(key_on, sizeof(key_on));
++	if (!err) {
++		err = exy_dsim_dcs_long(b1, sizeof(b1));
++	}
++	if (!err) {
++		err = exy_dsim_dcs_long(update, sizeof(update));
++	}
++	int err2 = exy_dsim_dcs_long(key_off, sizeof(key_off));
++	IOLockUnlock(exy_dsim_lock);
++	IOLog("SWEET BL: level %u -> AOR 0x%04x (%d/%d)\n", level, aor, err, err2);
++	return err ? err : err2;
++}
++
++class AppleARMBacklight : public IOService {
++	OSDeclareDefaultStructors(AppleARMBacklight);
++	uint32_t fLevel;
++public:
++	void publishLevel(uint32_t level);
++	IOReturn setProperties(OSObject *properties) APPLE_KEXT_OVERRIDE;
++};
++
++OSDefineMetaClassAndStructors(AppleARMBacklight, IOService);
++
++void
++AppleARMBacklight::publishLevel(uint32_t level)
++{
++	fLevel = level;
++	OSDictionary *params = OSDictionary::withCapacity(1);
++	OSDictionary *bright = OSDictionary::withCapacity(3);
++	OSNumber *mn = OSNumber::withNumber(0ULL, 32), *mx = OSNumber::withNumber(SWEET_BL_MAX, 32);
++	OSNumber *val = OSNumber::withNumber(level, 32);
++	if (params && bright && mn && mx && val) {
++		bright->setObject("min", mn);
++		bright->setObject("max", mx);
++		bright->setObject("value", val);
++		params->setObject("brightness", bright);
++		setProperty("IODisplayParameters", params);
++	}
++	OSSafeReleaseNULL(params);
++	OSSafeReleaseNULL(bright);
++	OSSafeReleaseNULL(mn);
++	OSSafeReleaseNULL(mx);
++	OSSafeReleaseNULL(val);
++}
++
++/* a brightness OSNumber, or a {value = N} dictionary */
++static bool
++sweet_bl_value(OSObject *o, uint32_t *out)
++{
++	OSNumber *n = OSDynamicCast(OSNumber, o);
++	OSDictionary *d = OSDynamicCast(OSDictionary, o);
++	if (n == NULL && d != NULL) {
++		n = OSDynamicCast(OSNumber, d->getObject("value"));
++	}
++	if (n == NULL) {
++		return false;
++	}
++	*out = n->unsigned32BitValue();
++	return true;
++}
++
++IOReturn
++AppleARMBacklight::setProperties(OSObject *properties)
++{
++	OSSerialize *s = OSSerialize::withCapacity(512);
++	if (s != NULL && properties->serialize(s)) {
++		IOLog("SWEET BL: setProperties %.300s\n", s->text());
++	}
++	OSSafeReleaseNULL(s);
++	OSDictionary *d = OSDynamicCast(OSDictionary, properties);
++	if (d == NULL) {
++		return kIOReturnBadArgument;
++	}
++	uint32_t level;
++	OSDictionary *params = OSDynamicCast(OSDictionary, d->getObject("IODisplayParameters"));
++	if (!sweet_bl_value(d->getObject("brightness"), &level) &&
++	    !(params != NULL && sweet_bl_value(params->getObject("brightness"), &level))) {
++		return kIOReturnUnsupported;
++	}
++	if (level > SWEET_BL_MAX) {
++		level = SWEET_BL_MAX;
++	}
++	publishLevel(level);
++	return exy_set_brightness(level) == 0 ? kIOReturnSuccess : kIOReturnNotResponding;
++}
++
++/* the backlight nub under the framebuffer (Exynos only) */
++static void
++sweet_backlight_attach(IOService *fb)
++{
++	exy_dsim = ml_io_map(EXY_DSIM_PA, PAGE_SIZE);
++	exy_dsim_lock = IOLockAlloc();
++	if (exy_dsim == 0 || exy_dsim_lock == NULL) {
++		IOLog("SWEET BL: DSIM mapping failed\n");
++		return;
++	}
++	IOLog("SWEET BL: DSIM INTSRC %#x\n", ((volatile uint32_t *)exy_dsim)[EXY_DSIM_INTSRC / 4]);
++	AppleARMBacklight *bl = OSTypeAlloc(AppleARMBacklight);
++	if (bl == NULL || !bl->init() || !bl->attach(fb)) {
++		OSSafeReleaseNULL(bl);
++		return;
++	}
++	uint32_t level = SWEET_BL_MAX;
++	bool set = PE_parse_boot_argn("sweetbl", &level, sizeof(level));
++	bl->publishLevel(level > SWEET_BL_MAX ? SWEET_BL_MAX : level);
++	bl->setProperty("backlight-control", true);
++	if (!bl->start(fb)) {
++		bl->detach(fb);
++		bl->release();
++		return;
++	}
++	bl->registerService();
++	if (set) {
++		(void)exy_set_brightness(level);
++	}
++	bl->release();          /* the registry holds it */
++}
++
+ static uint32_t
+ get32(const uint8_t *p, uint32_t off)
+ {
+@@ -555,6 +747,9 @@ AppleCLCD::start(IOService *provider)
+ 	setProperty("external", false);
+ 	setProperty("DisplayPipePlaneBaseAlignment", 64ULL, 32);
+ 	registerService();
++	if (sweet_is_exynos()) {
++		sweet_backlight_attach(this);
++	}
+ 	IOLog("SWEET FB: AppleCLCD %ux%u stride %u at 0x%llx, default surface %u, presented as %ux%u, %s, vsync %u us%s, zero-copy %s\n",
+ 	    fWidth, fHeight, fRowBytes, fPhys, fSurface->id, fLogicalW, fLogicalH,
+ 	    fCached ? "cached" : "write-combined", fVsyncUS, fVsync60 ? " (copies throttled)" : ", present on swap",
