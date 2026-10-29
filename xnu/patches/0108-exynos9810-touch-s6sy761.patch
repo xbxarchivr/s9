@@ -1,0 +1,346 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 3500b28..aff065c 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -15,6 +15,17 @@
+  * fingers at once. Only IC writes: CLEAR_EVENT_STACK, SET_TOUCHFUNCTION and
+  * SENSE_ON. Call once after the scheduler is running; all work runs on one
+  * thread.
++ *
++ * Galaxy S9 Exynos 9810 (G960F), same S6SY761 and protocol, proven by shim
++ * stage s9/exynos/x6.c (X6.8):
++ *   - Power: S2MPS18 LDO35 (tsp_io 1.8 V) and LDO43 (tsp_avdd 3.0 V), off
++ *     after S-Boot with their voltage already selected. The PMIC belongs to
++ *     the APM firmware: ACPM IPC (mailbox 0x14100000, APM SRAM 0x02039000,
++ *     channel 2), FUNC_UPDATE of only the enable bits (0xC0), as Linux's
++ *     regulator core does through exynos_acpm_update_reg.
++ *   - Bus: the HSI2C at 0x104B0000 NACKs (not solved yet); its pins GPP1-4
++ *     (SCL) / GPP1-5 (SDA) in PERIC0 0x10430020 are bit-banged as open drain
++ *     (CON nibble 1 = output low, 0 = input released). IRQ: GPA1-0 (ALIVE).
+  */
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ #include <sys/param.h>
+@@ -70,18 +81,39 @@ void sweet_touch_init(void);
+ #define PM_LDO3           0x06u       /* vsel 0-6: 2.7 V + 25 mV steps */
+ #define PM_VSEL           12u         /* 1.8 V and 3.0 V, the DT's min = max */
+ 
++/* Exynos 9810: pins as "numbers" for the shared code; the IRQ lives in ALIVE */
++#define EXY_PERIC0_PA     0x10430000u /* pinctrl PERIC0; gpp1 bank +0x20 */
++#define EXY_GPP1          0x20u       /* CON +0, DAT +4, PUD +8 */
++#define EXY_ALIVE_PA      0x14050000u /* pinctrl ALIVE; gpa1 bank +0x40 */
++#define EXY_GPA1_DAT      0x44u
++#define EXY_TS_SCL        4u          /* GPP1-4 */
++#define EXY_TS_SDA        5u          /* GPP1-5 */
++#define EXY_TS_IRQ        100u        /* GPA1-0, marker for the shared code */
++#define EXY_ACPM_MBOX_PA  0x14100000u /* INTGR0 0x08, INTCR1 0x20, INTSR1 0x28 */
++#define EXY_ACPM_SRAM_PA  0x02039000u
++#define EXY_ACPM_SRAM_LEN 0x30000u
++#define EXY_ACPM_INITDATA 0x7f00u
++#define EXY_ACPM_MFD_CH   2u
++#define EXY_L35CTRL       0x6cu       /* PMIC page 1; vsel 0x2C = 1.8 V */
++#define EXY_L43CTRL       0x74u       /* vsel 0x30 = 3.0 V */
++
+ struct touch_bus {
+ 	unsigned sda, scl;
+ };
+ 
+ static const struct touch_bus ts_bus = {TS_SDA, TS_SCL};
+ static const struct touch_bus pm_bus = {PM_SDA, PM_SCL};
++static const struct touch_bus exy_ts_bus = {EXY_TS_SDA, EXY_TS_SCL};
+ 
+ static struct {
+ 	vm_offset_t gpio;
+ 	bool started, probing;
+ 	uint32_t active;
+ 	int x[TOUCH_MAX], y[TOUCH_MAX];
++	bool exynos;
++	vm_offset_t alive, mbox, sram;  /* Exynos only; gpio = PERIC0 then */
++	const struct touch_bus *bus;
++	unsigned irq;
+ } st;
+ static int touch_sleep_chan;
+ 
+@@ -113,9 +145,23 @@ touch_wait(unsigned ms)
+ static unsigned
+ touch_level(unsigned pin)
+ {
++	if (st.exynos) {
++		if (pin == EXY_TS_IRQ) {
++			return touch_rd(st.alive, EXY_GPA1_DAT) & 1u;
++		}
++		return (touch_rd(st.gpio, EXY_GPP1 + 4) >> pin) & 1u;
++	}
+ 	return touch_rd(st.gpio, TOUCH_GPIO_IO(pin)) & 1u;
+ }
+ 
++/* Exynos GPP1 pin: input (released) or output driving its latch (0) */
++static void
++exy_pin_output(unsigned pin, bool out)
++{
++	uint32_t con = touch_rd(st.gpio, EXY_GPP1) & ~(0xfu << (pin * 4));
++	touch_wr(st.gpio, EXY_GPP1, con | (out ? 1u : 0u) << (pin * 4));
++}
++
+ /*
+  * i2c-gpio as Linux runs it: open drain by output enable, with the output
+  * latch at 0; a released line floats up on the board's pull-ups.
+@@ -123,6 +169,16 @@ touch_level(unsigned pin)
+ static void
+ bb_init(const struct touch_bus *b)
+ {
++	if (st.exynos) {
++		uint32_t m = 1u << b->sda | 1u << b->scl;
++		touch_wr(st.gpio, EXY_GPP1 + 4, touch_rd(st.gpio, EXY_GPP1 + 4) & ~m);
++		touch_wr(st.gpio, EXY_GPP1 + 8, touch_rd(st.gpio, EXY_GPP1 + 8) &
++		    ~(0xfu << (b->sda * 4) | 0xfu << (b->scl * 4)));      /* no pull */
++		exy_pin_output(b->sda, false);
++		exy_pin_output(b->scl, false);
++		delay(20);
++		return;
++	}
+ 	touch_wr(st.gpio, TOUCH_GPIO_IO(b->sda), 0);
+ 	touch_wr(st.gpio, TOUCH_GPIO_IO(b->scl), 0);
+ 	touch_wr(st.gpio, TOUCH_GPIO_CFG(b->sda), 0); /* GPIO function, input, no pull, 2 mA */
+@@ -133,14 +189,22 @@ bb_init(const struct touch_bus *b)
+ static void
+ bb_line(unsigned pin, bool high)
+ {
+-	touch_wr(st.gpio, TOUCH_GPIO_CFG(pin), high ? 0 : TOUCH_GPIO_OE);
++	if (st.exynos) {
++		exy_pin_output(pin, !high);
++	} else {
++		touch_wr(st.gpio, TOUCH_GPIO_CFG(pin), high ? 0 : TOUCH_GPIO_OE);
++	}
+ 	delay(TOUCH_HALF_US);
+ }
+ 
+ static bool
+ bb_scl_high(const struct touch_bus *b)
+ {
+-	touch_wr(st.gpio, TOUCH_GPIO_CFG(b->scl), 0);
++	if (st.exynos) {
++		exy_pin_output(b->scl, false);
++	} else {
++		touch_wr(st.gpio, TOUCH_GPIO_CFG(b->scl), 0);
++	}
+ 	for (unsigned i = 0; !touch_level(b->scl); ++i) {
+ 		if (i >= 10000) {
+ 			return false; /* stretched for ~10 ms: stuck */
+@@ -327,10 +391,140 @@ out:
+ 	return on;
+ }
+ 
++/*
++ * Exynos: one PMIC request through the APM firmware (ACPM IPC, polled), as
++ * acpm_ipc_send_data + check_response with acpm_mfd's encoding: cmd[0] =
++ * seq << 16 | type << 8 | reg, cmd[1] = func (READ 0, UPDATE 2 | val << 8 |
++ * mask << 16); reply cmd[1]: byte bits 8-15, status bits 24-31. Returns the
++ * byte, or -1 (no channel / timeout) or -(0x100 + status).
++ */
++static struct {
++	vm_offset_t tx_rear, tx_front, tx_base, rx_rear, rx_front, rx_base;
++	uint32_t len, size, id, seq;
++} acpm;
++
++static bool
++exy_acpm_init(void)
++{
++	vm_offset_t init = st.sram + EXY_ACPM_INITDATA;
++	uint32_t tbl = touch_rd(init, 0x08), apmax = touch_rd(init, 0x18);
++	if (!tbl || tbl >= EXY_ACPM_SRAM_LEN || !apmax || apmax > 32) {
++		printf("SWEET TOUCH: no ACPM framework (tbl %#x ap_max %u)\n", tbl, apmax);
++		return false;
++	}
++	for (uint32_t i = 0; i < apmax; i++) {
++		vm_offset_t e = st.sram + tbl + 72 * i;         /* struct ipc_channel */
++		if (touch_rd(e, 0) != EXY_ACPM_MFD_CH) {
++			continue;
++		}
++		acpm.id = EXY_ACPM_MFD_CH;
++		acpm.tx_rear = st.sram + touch_rd(e, 16);       /* AP sends on ch.rx_* */
++		acpm.tx_front = st.sram + touch_rd(e, 20);
++		acpm.tx_base = st.sram + touch_rd(e, 24);
++		acpm.rx_rear = st.sram + touch_rd(e, 40);       /* and receives on ch.tx_* */
++		acpm.rx_front = st.sram + touch_rd(e, 44);
++		acpm.rx_base = st.sram + touch_rd(e, 48);
++		acpm.len = touch_rd(e, 52);
++		acpm.size = touch_rd(e, 56);
++		return acpm.len && acpm.size >= 8 && acpm.size <= 64;
++	}
++	printf("SWEET TOUCH: no ACPM channel %u\n", EXY_ACPM_MFD_CH);
++	return false;
++}
++
++static int
++exy_acpm_pmic(uint32_t reg, uint32_t cmd1)
++{
++	uint64_t deadline;
++	uint32_t front = touch_rd(acpm.tx_front, 0), next = (front + 1) % acpm.len;
++
++	nanoseconds_to_absolutetime(100 * NSEC_PER_MSEC, &deadline);
++	deadline += mach_absolute_time();
++	while (next == touch_rd(acpm.tx_rear, 0)) {             /* queue full */
++		if (mach_absolute_time() > deadline) {
++			return -1;
++		}
++		delay(10);
++	}
++	if (++acpm.seq == 64) {
++		acpm.seq = 1;
++	}
++	vm_offset_t slot = acpm.tx_base + acpm.size * front;
++	touch_wr(slot, 0, acpm.seq << 16 | 1u << 8 | (reg & 0xff));     /* PMIC page 1 */
++	touch_wr(slot, 4, cmd1);
++	for (uint32_t o = 8; o < acpm.size; o += 4) {
++		touch_wr(slot, o, 0);
++	}
++	touch_wr(acpm.tx_front, 0, next);
++	touch_wr(st.mbox, 0x08, (1u << acpm.id) << 16);        /* INTGR0: ring the APM */
++
++	nanoseconds_to_absolutetime(100 * NSEC_PER_MSEC, &deadline);
++	deadline += mach_absolute_time();
++	while (mach_absolute_time() < deadline) {
++		if (!(touch_rd(st.mbox, 0x28) & (1u << acpm.id))) {   /* INTSR1 */
++			delay(5);
++			continue;
++		}
++		uint32_t rear = touch_rd(acpm.rx_rear, 0), rfront = touch_rd(acpm.rx_front, 0);
++		for (uint32_t i = rear; i != rfront; i = (i + 1) % acpm.len) {
++			vm_offset_t r = acpm.rx_base + acpm.size * i;
++			if (((touch_rd(r, 0) >> 16) & 0x3f) != acpm.seq) {
++				continue;
++			}
++			uint32_t c1 = touch_rd(r, 4);
++			if (i != rear) {        /* keep the queue compact, as check_response */
++				for (uint32_t o = 0; o < acpm.size; o += 4) {
++					touch_wr(r, o, touch_rd(acpm.rx_base + acpm.size * rear, o));
++				}
++			}
++			rear = (rear + 1) % acpm.len;
++			touch_wr(acpm.rx_rear, 0, rear);
++			if (rear == touch_rd(acpm.rx_front, 0)) {
++				touch_wr(st.mbox, 0x20, 1u << acpm.id); /* INTCR1 */
++			}
++			uint32_t status = (c1 >> 24) & 0xff;
++			return status ? -(int)(0x100 + status) : (int)((c1 >> 8) & 0xff);
++		}
++		delay(5);
++	}
++	return -1;
++}
++
++/*
++ * Exynos touch power: LDO35 then LDO43 (sec_ts_power order), only if their
++ * voltage selectors are the DT's 1.8 / 3.0 V; only the enable bits change.
++ */
++static bool
++exy_touch_power(void)
++{
++	if (!exy_acpm_init()) {
++		return false;
++	}
++	int l35 = exy_acpm_pmic(EXY_L35CTRL, 0), l43 = exy_acpm_pmic(EXY_L43CTRL, 0);
++	printf("SWEET TOUCH: S2MPS18 l35ctrl=%#x l43ctrl=%#x\n", l35, l43);
++	if (l35 < 0 || l43 < 0 || (l35 & 0x3f) != 0x2c || (l43 & 0x3f) != 0x30) {
++		printf("SWEET TOUCH: LDO35/LDO43 not readable or not 1.8/3.0 V; power untouched\n");
++		return false;
++	}
++	if ((l35 & 0xc0) != 0xc0) {
++		(void)exy_acpm_pmic(EXY_L35CTRL, 2u | 0xc0u << 8 | 0xc0u << 16);
++		delay(1000);
++	}
++	if ((l43 & 0xc0) != 0xc0) {
++		(void)exy_acpm_pmic(EXY_L43CTRL, 2u | 0xc0u << 8 | 0xc0u << 16);
++	}
++	delay(70000);   /* sec_ts_probe: 70 ms after power on */
++	l35 = exy_acpm_pmic(EXY_L35CTRL, 0);
++	l43 = exy_acpm_pmic(EXY_L43CTRL, 0);
++	bool on = l35 >= 0 && l43 >= 0 && (l35 & 0xc0) == 0xc0 && (l43 & 0xc0) == 0xc0;
++	printf("SWEET TOUCH: S2MPS18 l35ctrl=%#x l43ctrl=%#x: touch rails %s\n", l35, l43, on ? "on" : "OFF");
++	return on;
++}
++
+ static int
+ touch_read(uint8_t reg, uint8_t *buf, unsigned len)
+ {
+-	int err = i2c_rd(&ts_bus, SECTS_ADDR, reg, buf, len);
++	int err = i2c_rd(st.bus, SECTS_ADDR, reg, buf, len);
+ 	if (st.probing) {
+ 		printf("SWEET TOUCH: probe read %#x len=%u err=%d\n", reg, len, err);
+ 	}
+@@ -341,7 +535,7 @@ static int
+ sects_cmd(uint8_t cmd, const uint8_t *data, unsigned n)
+ {
+ 	uint8_t tx[3] = {cmd, (uint8_t)(n > 0 ? data[0] : 0), (uint8_t)(n > 1 ? data[1] : 0)};
+-	return i2c_wr(&ts_bus, SECTS_ADDR, tx, 1u + n);
++	return i2c_wr(st.bus, SECTS_ADDR, tx, 1u + n);
+ }
+ 
+ static void
+@@ -428,19 +622,33 @@ touch_thread(void *arg, wait_result_t result)
+ 	(void)PE_parse_boot_argn("sweettouchdelay", &delay_s, sizeof(delay_s));
+ 	printf("SWEET TOUCH: starting in %u s\n", delay_s);
+ 	touch_wait(delay_s * 1000u);
+-	st.gpio = ml_io_map(TOUCH_NORTH_PA, TOUCH_NORTH_LEN);
+-	if (!st.gpio) {
+-		printf("SWEET TOUCH: TLMM mapping failed\n");
+-		goto out;
+-	}
+-	if (!touch_power()) {
+-		goto out;
++	if (st.exynos) {
++		st.gpio = ml_io_map(EXY_PERIC0_PA, PAGE_SIZE);
++		st.alive = ml_io_map(EXY_ALIVE_PA, PAGE_SIZE);
++		st.mbox = ml_io_map(EXY_ACPM_MBOX_PA, PAGE_SIZE);
++		st.sram = ml_io_map(EXY_ACPM_SRAM_PA, EXY_ACPM_SRAM_LEN);
++		if (!st.gpio || !st.alive || !st.mbox || !st.sram) {
++			printf("SWEET TOUCH: Exynos mappings failed\n");
++			goto out;
++		}
++		if (!exy_touch_power()) {
++			goto out;
++		}
++	} else {
++		st.gpio = ml_io_map(TOUCH_NORTH_PA, TOUCH_NORTH_LEN);
++		if (!st.gpio) {
++			printf("SWEET TOUCH: TLMM mapping failed\n");
++			goto out;
++		}
++		if (!touch_power()) {
++			goto out;
++		}
+ 	}
+ 	touch_wait(200); /* sec_ts boot after power on */
+-	bb_init(&ts_bus);
++	bb_init(st.bus);
+ 	printf("SWEET TOUCH: lines sda=%u scl=%u irq=%u\n",
+-	    touch_level(TS_SDA), touch_level(TS_SCL), touch_level(TS_IRQ));
+-	if (!touch_level(TS_SDA) || !touch_level(TS_SCL)) {
++	    touch_level(st.bus->sda), touch_level(st.bus->scl), touch_level(st.irq));
++	if (!touch_level(st.bus->sda) || !touch_level(st.bus->scl)) {
+ 		printf("SWEET TOUCH: touch bus held low; stopping\n");
+ 		goto out;
+ 	}
+@@ -471,7 +679,7 @@ touch_thread(void *arg, wait_result_t result)
+ 	printf("SWEET TOUCH: bound to cpu %d\n", sweet_bind_current_thread(1));
+ 	unsigned errors = 0;
+ 	for (;;) {
+-		if (!touch_level(TS_IRQ)) {
++		if (!touch_level(st.irq)) {
+ 			int err = touch_sects();
+ 			if (err) {
+ 				if ((errors++ % 100u) == 0) {
+@@ -659,10 +867,9 @@ sweet_touch_init(void)
+ 		printf("SWEET TOUCH: disabled (sweettouch=0)\n");
+ 		return;
+ 	}
+-	if (sweet_is_exynos()) {	/* GENI SE + TLMM: Qualcomm only */
+-		printf("SWEET TOUCH: Exynos, no touch driver yet\n");
+-		return;
+-	}
++	st.exynos = sweet_is_exynos();
++	st.bus = st.exynos ? &exy_ts_bus : &ts_bus;
++	st.irq = st.exynos ? EXY_TS_IRQ : TS_IRQ;
+ 	kern_return_t kr = kernel_thread_start(touch_thread, NULL, &thread);
+ 	if (kr == KERN_SUCCESS) {
+ 		thread_set_thread_name(thread, "sweet.touch");
