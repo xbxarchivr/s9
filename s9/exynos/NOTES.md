@@ -1013,3 +1013,6 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 
 - boot-ios18 flashed 2026-10-29 with verified readback, rebooted into iOS. Result pending.
 
+- **CS47L93 ANSWERS (boot-ios18, log s9/logs/boot-ios18.txt, observed): SPI wiring = CLK GPP0-4, MOSI GPP0-5, MISO GPP0-6, CS GPP0-7; register 0 = 0x6371** (CS47L92/93 silicon ID) with Madera framing over bit-banged SPI. The DT's spi2-bus "gpp0-6, gpp0-5, gpp0-4" is MISO/MOSI/CLK. Other 5 orders read 0. Idle gpp0-4/5/6 = 0/0/0 (PUD 0x1111 on gpp0-4..7 = pull-down). Audio stage 1 complete: AUD domain on, MAX98512 rev 0x41 on I2C, CS47L93 on SPI.
+- Same boot: one SpringBoard crash = the CoreImage GL crash (unslid lr 0x194B3858C) in SpringBoard[26], the first SpringBoard, which starts before ElleKit's loader; launchd restarts it and the next one has S9CISoft. Happens once per boot while Bold Text is on (no respring job on this root: no shell).
+- Next, stage 2: earpiece tone - codec init over SPI (clocking: FLL1 from MCLK1 = xclkout 26 MHz on AUD gpb0-0, SYSCLK 98.304 MHz), tone generator -> HPOUT3 (receiver). Needs the Madera/CS47L92 register sequences from madera-core.c / cs47l92.c.
