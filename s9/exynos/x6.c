@@ -205,6 +205,102 @@ static int hsi2c_msg(uint8_t addr, int rd, uint8_t *buf, unsigned len)
 	return 0;
 }
 
+/*
+ * X6.4: bit-banged I2C on GPP1-4 (SCL) / GPP1-5 (SDA), open drain: a line is
+ * driven low as an output with DAT 0, released as an input (the bus has its
+ * own pull-ups on tsp_io). ~50 kHz. Proves the chip and the wiring without
+ * the HSI2C block.
+ */
+#define BB_SCL		4
+#define BB_SDA		5
+#define BB_HALF_US	10
+
+static void bb_line(int pin, int high)
+{
+	uint32_t con = rd32(PERIC0_GPP1) & ~(0xfu << (pin * 4));
+	if (!high) {
+		wr32(PERIC0_GPP1 + 4, rd32(PERIC0_GPP1 + 4) & ~(1u << pin));
+		con |= 1u << (pin * 4);		/* output, low */
+	}
+	wr32(PERIC0_GPP1, con);			/* input = released */
+	udelay(BB_HALF_US);
+}
+
+static int bb_get(int pin)
+{
+	return rd32(PERIC0_GPP1 + 4) >> pin & 1;
+}
+
+static void bb_start(void)
+{
+	bb_line(BB_SDA, 1);
+	bb_line(BB_SCL, 1);
+	bb_line(BB_SDA, 0);
+	bb_line(BB_SCL, 0);
+}
+
+static void bb_stop(void)
+{
+	bb_line(BB_SDA, 0);
+	bb_line(BB_SCL, 1);
+	bb_line(BB_SDA, 1);
+}
+
+/* returns 0 on ACK */
+static int bb_write_byte(uint8_t v)
+{
+	for (int i = 7; i >= 0; i--) {
+		bb_line(BB_SDA, v >> i & 1);
+		bb_line(BB_SCL, 1);
+		bb_line(BB_SCL, 0);
+	}
+	bb_line(BB_SDA, 1);
+	bb_line(BB_SCL, 1);
+	int nack = bb_get(BB_SDA);
+	bb_line(BB_SCL, 0);
+	return nack;
+}
+
+static uint8_t bb_read_byte(int ack)
+{
+	uint8_t v = 0;
+	bb_line(BB_SDA, 1);
+	for (int i = 0; i < 8; i++) {
+		bb_line(BB_SCL, 1);
+		v = (uint8_t)(v << 1 | bb_get(BB_SDA));
+		bb_line(BB_SCL, 0);
+	}
+	bb_line(BB_SDA, !ack);
+	bb_line(BB_SCL, 1);
+	bb_line(BB_SCL, 0);
+	bb_line(BB_SDA, 1);
+	return v;
+}
+
+/* cmd write, stop, then read len bytes: 0 ok, 1 no ACK on address, 2 no ACK on cmd */
+static int bb_ts_read(uint8_t cmd, uint8_t *buf, unsigned len)
+{
+	bb_start();
+	if (bb_write_byte(TS_ADDR << 1)) {
+		bb_stop();
+		return 1;
+	}
+	if (bb_write_byte(cmd)) {
+		bb_stop();
+		return 2;
+	}
+	bb_stop();
+	bb_start();
+	if (bb_write_byte(TS_ADDR << 1 | 1)) {
+		bb_stop();
+		return 3;
+	}
+	for (unsigned i = 0; i < len; i++)
+		buf[i] = bb_read_byte(i + 1 < len);
+	bb_stop();
+	return 0;
+}
+
 static int ts_read(uint8_t reg, uint8_t *buf, unsigned len)
 {
 	int r = hsi2c_msg(TS_ADDR, 0, &reg, 1);
@@ -263,7 +359,7 @@ void shim_main(uint64_t dtb)
 	if (!xp.fb_ok)
 		xp_reset();
 	con_clear(GREY);
-	con_title("EXYNOS X6.3 RUNS");
+	con_title("EXYNOS X6.4 RUNS");
 	con_str("MODEL", xp.model[0] ? xp.model : "(no DTB)");
 
 	/* what S-Boot left: pins, IRQ level, and the HSI2C block itself */
@@ -290,6 +386,29 @@ void shim_main(uint64_t dtb)
 	p = put_hex(put(b, "gpp1 con "), rd32(PERIC0_GPP1), 8);
 	put_hex(put(p, " pud "), rd32(PERIC0_GPP1 + 8), 8);
 	con_str("GPP1", b);
+
+	/* X6.4: bus levels with the pins as inputs (no pull, then pull-up), and a bit-banged ID read */
+	wr32(PERIC0_GPP1, rd32(PERIC0_GPP1) & ~(0xffu << 16));
+	wr32(PERIC0_GPP1 + 8, rd32(PERIC0_GPP1 + 8) & ~(0xffu << 16));
+	udelay(100);
+	uint32_t lv_none = rd32(PERIC0_GPP1 + 4) >> 4 & 3;
+	wr32(PERIC0_GPP1 + 8, rd32(PERIC0_GPP1 + 8) | 0x33u << 16);
+	udelay(100);
+	uint32_t lv_up = rd32(PERIC0_GPP1 + 4) >> 4 & 3;
+	wr32(PERIC0_GPP1 + 8, rd32(PERIC0_GPP1 + 8) & ~(0xffu << 16));
+	p = put_dec(put(b, "scl/sda no pull "), lv_none & 1);
+	p = put_dec(put(p, "/"), lv_none >> 1);
+	p = put_dec(put(p, "  pull-up "), lv_up & 1);
+	put_dec(put(p, "/"), lv_up >> 1);
+	con_str("LINES", b);
+	r = bb_ts_read(SEC_TS_READ_ID, d, 3);
+	p = put_dec(put(b, "bitbang id rc "), r);
+	put_bytes(put(p, "  "), d, r ? 0 : 3);
+	con_str("BITBANG", b);
+	r = bb_ts_read(SEC_TS_READ_BOOT_STATUS, d, 1);
+	p = put_dec(put(b, "bitbang boot rc "), r);
+	put_bytes(put(p, "  "), d, r ? 0 : 1);
+	con_str("", b);
 	uint32_t con = rd32(PERIC0_GPP1);
 	con = (con & ~(0xffu << 16)) | 0x22u << 16;
 	wr32(PERIC0_GPP1, con);
@@ -312,7 +431,12 @@ void shim_main(uint64_t dtb)
 	p = put_hex(put(p, " ipclk "), rd32(CMU_GOUT_IPCLK), 8);
 	put_hex(put(p, " qch "), rd32(CMU_QCH_USI03), 8);
 	con_str("", b);
-	/* X6.2 showed these already on (gates CG_VAL, QCH CLOCK_REQ): read only */
+	/* X6.4: with the right pins, force the gates and the Q-channel too */
+	const uintptr_t gates[3] = { CMU_GATE_USI03, CMU_GOUT_RSTSYN, CMU_GOUT_IPCLK };
+	for (int i = 0; i < 3; i++)
+		wr32(gates[i], (rd32(gates[i]) & ~GATE_AUTO) | GATE_MANUAL_ON);
+	wr32(CMU_QCH_USI03, (rd32(CMU_QCH_USI03) & ~1u) | 1u << 1 | 1u << 2);
+	hsi2c_reset();
 	con_skip();
 
 	/* the chip: pending event (boot status), IDs */
