@@ -1,0 +1,63 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index fe7db35..5f1d081 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -974,6 +974,14 @@ abox_peek(const char *name, vm_offset_t va, uint32_t pa)
+ 	return true;
+ }
+ 
++/* safe read for logging: the value, or 0xabababab when the slave refused it */
++static uint32_t
++abox_sp(vm_offset_t va)
++{
++	uint32_t v = 0;
++	return sweet_probe_rd32(va, &v) ? 0xababababu : v;
++}
++
+ /* true when the sysreg answers (MISC_CON, the register abox.c writes) */
+ static bool
+ abox_scan(const char *when, vm_offset_t cmu, vm_offset_t sys, vm_offset_t mmu)
+@@ -1276,23 +1284,30 @@ exy_abox_boot(void)
+ 	touch_wr(pmu, 0x1424, touch_rd(pmu, 0x1424) | 1);
+ 	printf("SWEET ABOX: cpu_status %#x after %d polls\n", touch_rd(pmu, 0x4160), n);
+ 
+-	/* boot done arrives as an IPC in SRAM at ipc_rx_offset 0x30300 (DT) */
+-	for (int t = 0; t < 30; t++) {
+-		uint32_t id = touch_rd(sram, 0x30300), type = touch_rd(sram, 0x30308), pc = 0xdead;
+-		if (t < 5 || t % 5 == 4 || (id == 1 && type == 3)) {
+-			(void)sweet_probe_rd32(sfr + 0x2c3c, &pc);       /* ABOX_CPU_PC */
+-			printf("SWEET ABOX: t+%d00ms pc %#x syspower %#x rx ipcid %u msg %u p1 %#x p3 %#x"
+-			    " mmu int %#x far %#x/%#x\n", t, pc, touch_rd(sfr, 0x14), id, type,
+-			    touch_rd(sram, 0x3030c), touch_rd(sram, 0x30314), touch_rd(mmu, 0x60),
+-			    touch_rd(mmu, 0x70), touch_rd(mmu, 0x80));
++	/*
++	 * Boot done arrives as an IPC in SRAM at ipc_rx_offset 0x30300 (DT).
++	 * boot-ios28: once the ABOX CPU was enabled a plain read of SRAM
++	 * +0x30300 bus-errored (esr 0x96000010, far = the SRAM +0x30000 page),
++	 * so every read here goes through the safe path; 0xabababab = ABORT.
++	 * 10 s, abox.c BOOT_DONE_TIMEOUT_MS.
++	 */
++	for (int t = 0; t < 100; t++) {
++		uint32_t id = abox_sp(sram + 0x30300), type = abox_sp(sram + 0x30308);
++		bool done = id == 1 && type == 3;
++		if (t < 10 || t % 10 == 9 || done) {
++			printf("SWEET ABOX: t+%d00ms pc %#x cpu_status %#x syspower %#x sram+0 %#x +0x30000 %#x"
++			    " rx ipcid %#x msg %#x p1 %#x p3 %#x mmu int %#x far %#x/%#x\n", t,
++			    abox_sp(sfr + 0x2c3c), touch_rd(pmu, 0x4160), abox_sp(sfr + 0x14), abox_sp(sram),
++			    abox_sp(sram + 0x30000), id, type, abox_sp(sram + 0x3030c), abox_sp(sram + 0x30314),
++			    abox_sp(mmu + 0x60), abox_sp(mmu + 0x70), abox_sp(mmu + 0x80));
+ 		}
+-		if (id == 1 && type == 3) {
+-			printf("SWEET ABOX: BOOT DONE, Calliope version %#x\n", touch_rd(sram, 0x30314));
++		if (done) {
++			printf("SWEET ABOX: BOOT DONE, Calliope version %#x\n", abox_sp(sram + 0x30314));
+ 			return;
+ 		}
+-		delay(100000);
++		touch_wait(100);
+ 	}
+-	printf("SWEET ABOX: no boot done after 3 s\n");
++	printf("SWEET ABOX: no boot done after 10 s\n");
+ }
+ 
+ static void
