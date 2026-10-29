@@ -1039,3 +1039,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 
 - **0120 compiled** (run 40912670850, success): `out/exynos/xnu17/kernel.development.sweet` sha256 4fcbff34... **Boot image `out/exynos/boot-ios21.img`** (sha256 c96fffaa...) = boot-ios20 cmdline (sweetaudio=2) with the 0120 kernel: tone to the headphone jack. Not flashed.
 
+- boot-ios21 (headphone tone) flashed 2026-10-29 with verified readback, rebooted. Result pending.
+
