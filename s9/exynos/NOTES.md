@@ -1054,3 +1054,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 - **Patch 0121 (written): sweetaudio=3 -> exy_abox_probe()**, read only: PMU 0x814/0x415C/0x4160/0x4164, then ABOX SFR (IP_INDEX/VERSION/SYSPOWER), sysreg MISC_CON/L2_CACHE_CON, SysMMU CTRL/CFG/STATUS/VERSION; logs and sleeps 11 s (one 10 s sweetlog flush) before each of those three blocks, so a bus hang leaves the block's name on UFS.
 - **0121 compiled** (run 40915193774, success): `out/exynos/xnu18/kernel.development.sweet` sha256 3b6491ed... **Boot image `out/exynos/boot-ios22.img`** (sha256 2f755ca7...) = boot-ios21 cmdline with **sweetaudio=3** (ABOX probe; no tone). Not flashed. Fallback if it hangs: boot-ios15 (4 GB, no audio probe).
 
+- boot-ios22 (ABOX probe) flashed 2026-10-29 with verified readback, rebooted. Result pending.
+
