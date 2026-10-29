@@ -998,3 +998,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 
 - boot-ios16 (audio probe) flashed 2026-10-29 with verified readback, rebooted into iOS. Result pending.
 
+- **Audio stage 1 RESULT (boot-ios16, log s9/logs/boot-ios16.txt, observed):** `pd-aud config 0xf status 0x10000f` (AUD power domain ON after S-Boot); `codec LDO33 0xec LDO34 0xe8` (both enabled, bits 7:6), `reset GPG1-0 con 0x1 dat 0` (CS47L93 held in reset, active low -> SPI read skipped by design); `MAX98512 bus con 0 idle scl=1 sda=1, rev 0x0402=65 0x0600=0` -> **MAX98512 answers at 0x39, REV_ID 0x41 (not the B variant)** over bit-banged I2C on GPP4-4/5. Boot otherwise normal (driverkitd x1).
+  - Next (stage 1b): release the codec reset (GPG1-0 high; Linux madera does this after enabling the supplies) and read register 0 over SPI (expect 0x6371). Then stage 2 (tone to the earpiece) needs MCLK: codec FLL ref = xclkout 26 MHz on AUD pin gpb0-0 (AUD domain is on).
