@@ -1,0 +1,248 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 1f6d75e..f71a4c6 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -608,6 +608,235 @@ exy_cpu_dvfs(void)
+ 	}
+ }
+ 
++/*
++ * Exynos 9810 audio, stage 1 (boot-arg sweetaudio=1): a read-only probe of
++ * the parts in exynos/NOTES.md "Audio". ABOX power domain (PMU pd-aud
++ * 0x14064000); CS47L93 supplies (S2MPS18 LDO33 / LDO34 over ACPM) and reset
++ * pin (GPG1-0); MAX98512 revision (16-bit registers 0x0402 / 0x0600) over
++ * bit-banged I2C on its hsi2c18 pins (PERIC1 GPP4-4 SCL, GPP4-5 SDA); and,
++ * only if the codec is powered and out of reset, its silicon ID (register 0,
++ * 0x6371 = CS47L92/93) over bit-banged SPI on USI2's pins (PERIC0 GPP0-6
++ * CLK, GPP0-4 MOSI, GPP0-5 MISO, GPP0-7 CS; Madera framing: 32-bit address
++ * with read flag 0x80 in the top byte, 16 pad bits, 16-bit value). No chip
++ * register is written; the pins get their configuration back.
++ */
++#define EXY_PD_AUD_PA     0x14064000u
++#define EXY_PERIC1_PA     0x10830000u
++#define EXY_GPP0          0x000u
++#define EXY_GPG1          0x0a0u
++#define EXY_GPP4          0x000u      /* in PERIC1 */
++#define EXY_L33CTRL       0x6au       /* LDO n ctrl = 0x6c + (n - 35), as LDO35/43 */
++#define EXY_L34CTRL       0x6bu
++#define MAX98512_ADDR     0x39u
++#define AUD_HALF_US       5
++
++struct apin {
++	vm_offset_t base;
++	uint32_t bank;
++	unsigned n;
++};
++
++static void
++apin_con(const struct apin *p, uint32_t f)
++{
++	uint32_t c = touch_rd(p->base, p->bank) & ~(0xfu << (p->n * 4));
++	touch_wr(p->base, p->bank, c | f << (p->n * 4));
++}
++
++static void
++apin_dat(const struct apin *p, unsigned v)
++{
++	uint32_t d = touch_rd(p->base, p->bank + 4) & ~(1u << p->n);
++	touch_wr(p->base, p->bank + 4, d | (v ? 1u : 0u) << p->n);
++}
++
++static unsigned
++apin_get(const struct apin *p)
++{
++	return (touch_rd(p->base, p->bank + 4) >> p->n) & 1;
++}
++
++/* open drain: low = output 0, high = input (pull-up) */
++static void
++ai2c_line(const struct apin *p, bool high)
++{
++	if (high) {
++		apin_con(p, 0);
++	} else {
++		apin_dat(p, 0);
++		apin_con(p, 1);
++	}
++	delay(AUD_HALF_US);
++}
++
++static bool
++ai2c_scl_high(const struct apin *scl)
++{
++	apin_con(scl, 0);
++	for (int i = 0; !apin_get(scl); i++) {
++		if (i > 10000) {
++			return false;
++		}
++		delay(1);
++	}
++	delay(AUD_HALF_US);
++	return true;
++}
++
++static int
++ai2c_byte(const struct apin *sda, const struct apin *scl, uint8_t v)
++{
++	for (int i = 7; i >= 0; i--) {
++		ai2c_line(sda, (v >> i) & 1);
++		if (!ai2c_scl_high(scl)) {
++			return -2;
++		}
++		ai2c_line(scl, false);
++	}
++	ai2c_line(sda, true);
++	if (!ai2c_scl_high(scl)) {
++		return -2;
++	}
++	int nack = apin_get(sda);
++	ai2c_line(scl, false);
++	return nack ? -1 : 0;
++}
++
++/* one byte from a 16-bit register; -1 NACK, -2 clock stuck */
++static int
++ai2c_read16(const struct apin *sda, const struct apin *scl, uint8_t addr, uint16_t reg)
++{
++	int err, v = 0;
++	ai2c_line(sda, true);
++	if (!ai2c_scl_high(scl)) {
++		return -2;
++	}
++	ai2c_line(sda, false);                  /* START */
++	ai2c_line(scl, false);
++	if ((err = ai2c_byte(sda, scl, (uint8_t)(addr << 1))) ||
++	    (err = ai2c_byte(sda, scl, (uint8_t)(reg >> 8))) ||
++	    (err = ai2c_byte(sda, scl, (uint8_t)reg))) {
++		goto stop;
++	}
++	ai2c_line(sda, true);                   /* repeated START */
++	if (!ai2c_scl_high(scl)) {
++		err = -2;
++		goto stop;
++	}
++	ai2c_line(sda, false);
++	ai2c_line(scl, false);
++	if ((err = ai2c_byte(sda, scl, (uint8_t)(addr << 1 | 1)))) {
++		goto stop;
++	}
++	ai2c_line(sda, true);
++	for (int i = 0; i < 8; i++) {
++		if (!ai2c_scl_high(scl)) {
++			err = -2;
++			goto stop;
++		}
++		v = v << 1 | apin_get(sda);
++		ai2c_line(scl, false);
++	}
++	ai2c_line(sda, true);                   /* NACK: last byte */
++	(void)ai2c_scl_high(scl);
++	ai2c_line(scl, false);
++	err = v;
++stop:
++	ai2c_line(sda, false);
++	(void)ai2c_scl_high(scl);
++	ai2c_line(sda, true);
++	return err;
++}
++
++/* SPI mode 0, MSB first: n bits out on MOSI, the bits seen on MISO returned */
++static uint32_t
++aspi_bits(const struct apin *clk, const struct apin *mosi, const struct apin *miso, uint32_t out, unsigned n)
++{
++	uint32_t in = 0;
++	for (int i = (int)n - 1; i >= 0; i--) {
++		apin_dat(mosi, (out >> i) & 1);
++		delay(2);
++		apin_dat(clk, 1);
++		in = in << 1 | apin_get(miso);
++		delay(2);
++		apin_dat(clk, 0);
++	}
++	return in;
++}
++
++static void
++exy_audio_probe(void)
++{
++	int on = 0;
++	(void)PE_parse_boot_argn("sweetaudio", &on, sizeof(on));
++	if (!on) {
++		return;
++	}
++	vm_offset_t pmu = ml_io_map(EXY_PD_AUD_PA & ~(vm_offset_t)PAGE_MASK, PAGE_SIZE);
++	vm_offset_t p0 = ml_io_map(EXY_PERIC0_PA, PAGE_SIZE), p1 = ml_io_map(EXY_PERIC1_PA, PAGE_SIZE);
++	if (!pmu || !p0 || !p1) {
++		printf("SWEET AUDIO: mappings failed\n");
++		return;
++	}
++	uint32_t pdoff = EXY_PD_AUD_PA & PAGE_MASK;
++	printf("SWEET AUDIO: pd-aud config %#x status %#x\n",
++	    touch_rd(pmu, pdoff), touch_rd(pmu, pdoff + 4));
++
++	int l33 = -1, l34 = -1;
++	if (acpm_mfd.len != 0 || exy_acpm_init(&acpm_mfd, EXY_ACPM_MFD_CH, false)) {
++		l33 = exy_acpm_pmic(EXY_L33CTRL, 0);
++		l34 = exy_acpm_pmic(EXY_L34CTRL, 0);
++	}
++	struct apin rst = {p0, EXY_GPG1, 0};
++	uint32_t g1con = touch_rd(p0, EXY_GPG1), g1dat = touch_rd(p0, EXY_GPG1 + 4);
++	printf("SWEET AUDIO: codec LDO33 %#x LDO34 %#x, reset GPG1-0 con %#x dat %u\n",
++	    l33, l34, (g1con >> 0) & 0xf, apin_get(&rst));
++	(void)g1dat;
++
++	/* MAX98512 on GPP4-4 (SCL) / GPP4-5 (SDA) */
++	struct apin scl = {p1, EXY_GPP4, 4}, sda = {p1, EXY_GPP4, 5};
++	uint32_t c4 = touch_rd(p1, EXY_GPP4), d4 = touch_rd(p1, EXY_GPP4 + 4), u4 = touch_rd(p1, EXY_GPP4 + 8);
++	touch_wr(p1, EXY_GPP4 + 8, u4 & ~(0xfu << 16 | 0xfu << 20));   /* no pull: board pull-ups */
++	apin_con(&scl, 0);
++	apin_con(&sda, 0);
++	delay(20);
++	unsigned idle_scl = apin_get(&scl), idle_sda = apin_get(&sda);
++	int rev = ai2c_read16(&sda, &scl, MAX98512_ADDR, 0x0402);
++	int revb = ai2c_read16(&sda, &scl, MAX98512_ADDR, 0x0600);
++	touch_wr(p1, EXY_GPP4 + 4, d4);
++	touch_wr(p1, EXY_GPP4 + 8, u4);
++	touch_wr(p1, EXY_GPP4, c4);
++	printf("SWEET AUDIO: MAX98512 bus con %#x idle scl=%u sda=%u, rev 0x0402=%d 0x0600=%d\n",
++	    c4, idle_scl, idle_sda, rev, revb);
++
++	/* CS47L93: only when powered (enable bits 7:6 set) and out of reset */
++	bool powered = l33 >= 0 && l34 >= 0 && (l33 & 0xc0) == 0xc0 && (l34 & 0xc0) == 0xc0;
++	if (!powered || (g1con & 0xf) != 1 || !apin_get(&rst)) {
++		printf("SWEET AUDIO: CS47L93 not powered or held in reset: SPI read skipped\n");
++		return;
++	}
++	struct apin mosi = {p0, EXY_GPP0, 4}, miso = {p0, EXY_GPP0, 5}, clk = {p0, EXY_GPP0, 6}, cs = {p0, EXY_GPP0, 7};
++	uint32_t c0 = touch_rd(p0, EXY_GPP0), d0 = touch_rd(p0, EXY_GPP0 + 4);
++	apin_dat(&cs, 1);
++	apin_dat(&clk, 0);
++	apin_dat(&mosi, 0);
++	apin_con(&cs, 1);
++	apin_con(&clk, 1);
++	apin_con(&mosi, 1);
++	apin_con(&miso, 0);
++	delay(10);
++	apin_dat(&cs, 0);
++	delay(5);
++	(void)aspi_bits(&clk, &mosi, &miso, 0x80000000u, 32);   /* read, register 0 */
++	(void)aspi_bits(&clk, &mosi, &miso, 0, 16);             /* pad */
++	uint32_t id = aspi_bits(&clk, &mosi, &miso, 0, 16);
++	apin_dat(&cs, 1);
++	delay(5);
++	touch_wr(p0, EXY_GPP0 + 4, d0);
++	touch_wr(p0, EXY_GPP0, c0);
++	printf("SWEET AUDIO: CS47L93 SPI con %#x, register 0 = %#x (expect 0x6371)\n", c0, id);
++}
++
+ /*
+  * Exynos touch power: LDO35 then LDO43 (sec_ts_power order), only if their
+  * voltage selectors are the DT's 1.8 / 3.0 V; only the enable bits change.
+@@ -738,6 +967,7 @@ touch_thread(void *arg, wait_result_t result)
+ 		st.sram = ml_io_map(EXY_ACPM_SRAM_PA, EXY_ACPM_SRAM_LEN);
+ 		if (st.mbox && st.sram) {
+ 			exy_cpu_dvfs();
++			exy_audio_probe();
+ 		}
+ 	}
+ 	if (!st.enabled) {
