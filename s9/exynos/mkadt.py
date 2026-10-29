@@ -51,6 +51,7 @@ GICC, GICC_SIZE = 0x10102000, 0x2000
 FB, FB_SIZE = 0xcc000000, 0x1100000
 UFS_HCI, UFS_HCI_SIZE = 0x11120000, 0x8000
 S9_ECID = 0x5357454554009810    # 'SWEET' + 9810, synthetic (the sweet uses ...0001)
+S9_ECID_2X = 0x5357454554029810  # --scale2: own UUID, so MobileGestalt recomputes the screen answers
 A55_MPIDR = (0x000, 0x100, 0x200, 0x300)
 
 
@@ -86,7 +87,7 @@ def build(scale=3, small=False):
     # Own synthetic ECID -> own IOPlatformUUID. MobileGestalt's disk cache is
     # keyed by build + UUID only: a new UUID makes it recompute (boots before
     # the D22AP /product node existed cached answers without artwork traits).
-    set_prop(chosen, 'unique-chip-id', struct.pack('<Q', S9_ECID))
+    set_prop(chosen, 'unique-chip-id', struct.pack('<Q', S9_ECID if scale == 3 else S9_ECID_2X))
 
     cpus = find(root, 'cpus')
     a55 = []
