@@ -1,0 +1,62 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index f71a4c6..bdecf0f 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -809,12 +809,22 @@ exy_audio_probe(void)
+ 	printf("SWEET AUDIO: MAX98512 bus con %#x idle scl=%u sda=%u, rev 0x0402=%d 0x0600=%d\n",
+ 	    c4, idle_scl, idle_sda, rev, revb);
+ 
+-	/* CS47L93: only when powered (enable bits 7:6 set) and out of reset */
++	/*
++	 * CS47L93: only when powered (enable bits 7:6 set) and its reset pin is
++	 * an output. S-Boot leaves it driven low (in reset): release it as
++	 * Linux's madera core does after the supplies (then ~1 ms, and boot
++	 * done within ~25 ms), read, and put it back in reset afterwards.
++	 */
+ 	bool powered = l33 >= 0 && l34 >= 0 && (l33 & 0xc0) == 0xc0 && (l34 & 0xc0) == 0xc0;
+-	if (!powered || (g1con & 0xf) != 1 || !apin_get(&rst)) {
+-		printf("SWEET AUDIO: CS47L93 not powered or held in reset: SPI read skipped\n");
++	if (!powered || (g1con & 0xf) != 1) {
++		printf("SWEET AUDIO: CS47L93 not powered or reset pin not an output: SPI read skipped\n");
+ 		return;
+ 	}
++	bool was_reset = !apin_get(&rst);
++	if (was_reset) {
++		apin_dat(&rst, 1);
++		delay(20000);
++	}
+ 	struct apin mosi = {p0, EXY_GPP0, 4}, miso = {p0, EXY_GPP0, 5}, clk = {p0, EXY_GPP0, 6}, cs = {p0, EXY_GPP0, 7};
+ 	uint32_t c0 = touch_rd(p0, EXY_GPP0), d0 = touch_rd(p0, EXY_GPP0 + 4);
+ 	apin_dat(&cs, 1);
+@@ -825,16 +835,23 @@ exy_audio_probe(void)
+ 	apin_con(&mosi, 1);
+ 	apin_con(&miso, 0);
+ 	delay(10);
+-	apin_dat(&cs, 0);
+-	delay(5);
+-	(void)aspi_bits(&clk, &mosi, &miso, 0x80000000u, 32);   /* read, register 0 */
+-	(void)aspi_bits(&clk, &mosi, &miso, 0, 16);             /* pad */
+-	uint32_t id = aspi_bits(&clk, &mosi, &miso, 0, 16);
+-	apin_dat(&cs, 1);
+-	delay(5);
++	uint32_t val[2];
++	for (uint32_t reg = 0; reg < 2; reg++) {        /* 0 silicon ID, 1 hardware revision */
++		apin_dat(&cs, 0);
++		delay(5);
++		(void)aspi_bits(&clk, &mosi, &miso, 0x80000000u | reg, 32);    /* read flag + address */
++		(void)aspi_bits(&clk, &mosi, &miso, 0, 16);                     /* pad */
++		val[reg] = aspi_bits(&clk, &mosi, &miso, 0, 16);
++		apin_dat(&cs, 1);
++		delay(5);
++	}
+ 	touch_wr(p0, EXY_GPP0 + 4, d0);
+ 	touch_wr(p0, EXY_GPP0, c0);
+-	printf("SWEET AUDIO: CS47L93 SPI con %#x, register 0 = %#x (expect 0x6371)\n", c0, id);
++	if (was_reset) {
++		apin_dat(&rst, 0);              /* back as S-Boot left it */
++	}
++	printf("SWEET AUDIO: CS47L93 SPI con %#x, reset %s, register 0 = %#x (expect 0x6371), revision %#x\n",
++	    c0, was_reset ? "released for the read" : "already released", val[0], val[1]);
+ }
+ 
+ /*
