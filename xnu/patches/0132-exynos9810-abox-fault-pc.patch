@@ -1,0 +1,72 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 4e12c41..ffc6772 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -1200,6 +1200,22 @@ abox_blob(const char *name, uint32_t *size)
+  * registers are in the SFR: ABOX_CPU_R(x) 0x2C00 + 4x, PC 0x2C3C,
+  * L2C_STATUS 0x2C40.
+  */
++/* Calliope VA below 1 MB -> SRAM offset through its coarse table at SRAM 0x28000, or ~0 */
++static uint32_t
++abox_va_sram(vm_offset_t sram, uint32_t va)
++{
++	if (va >= 0x100000) {
++		return ~0u;
++	}
++	uint32_t e = abox_sp(sram + 0x28000 + 4 * (va >> 12));
++	uint32_t pa = (e & 0xfffff000u) + (va & 0xfff);
++	if (!(e & 2) || pa < 0x17d00000u || pa - 0x17d00000u >= ABOX_SRAM_SIZE) {
++		/* small page into the ABOX SRAM (0x17D00000) only; else identity guess */
++		return (e & 2) && (e & 0xfffff000u) < ABOX_SRAM_SIZE ? pa : ~0u;
++	}
++	return pa - 0x17d00000u;
++}
++
+ static void
+ abox_fault_dump(vm_offset_t sram, vm_offset_t sfr)
+ {
+@@ -1239,6 +1255,35 @@ abox_fault_dump(vm_offset_t sram, vm_offset_t sfr)
+ 		    abox_sp(sfr + 0x2c08 + 4 * i), abox_sp(sfr + 0x2c0c + 4 * i));
+ 	}
+ 	printf("SWEET ABOX: live L2C_STATUS %#x\n", abox_sp(sfr + 0x2c40));
++	/*
++	 * boot-ios32 + capstone on calliope_sram.bin: the data-abort vector
++	 * (0x2bfc) stores r0-r14 (lr = faulting PC, +0x38) into the block whose
++	 * address is the word at VA 0x955c, then calls 0x2708(DFSR, DFAR, PC),
++	 * which stores CPSR and the faulting PC at VA 0x954c / 0x9550 (strd to
++	 * literal 0x9544 + 8) before sending the IPC. VA 0-1 MB goes through
++	 * the coarse table at SRAM 0x28000 (boot-ios32 L1 entry 0x00028001):
++	 * print its 4 KB entries for the SRAM-sized range and read through it.
++	 */
++	for (uint32_t pg = 0; pg < 0x34; pg += 4) {
++		printf("SWEET ABOX: L2 VA %#07x: %08x %08x %08x %08x\n", pg << 12,
++		    abox_sp(sram + 0x28000 + 4 * pg), abox_sp(sram + 0x28004 + 4 * pg),
++		    abox_sp(sram + 0x28008 + 4 * pg), abox_sp(sram + 0x2800c + 4 * pg));
++	}
++	uint32_t info = abox_va_sram(sram, 0x954c), cp = abox_va_sram(sram, 0x955c);
++	if (info != ~0u) {
++		printf("SWEET ABOX: FAULT PC %#x cpsr %#x (VA 0x9550 = sram %#x)\n",
++		    abox_sp(sram + info + 4), abox_sp(sram + info), info + 4);
++	}
++	uint32_t ctx = cp != ~0u ? abox_sp(sram + cp) : ~0u, co = abox_va_sram(sram, ctx);
++	printf("SWEET ABOX: context block VA %#x -> sram %#x\n", ctx, co);
++	if (co != ~0u) {
++		for (int i = 0; i < 16; i += 4) {
++			printf("SWEET ABOX: ctx R%02d-R%02d %08x %08x %08x %08x%s\n", i, i + 3,
++			    abox_sp(sram + co + 4 * i), abox_sp(sram + co + 4 * i + 4),
++			    abox_sp(sram + co + 4 * i + 8), abox_sp(sram + co + 4 * i + 12),
++			    i == 12 ? " (R14 = faulting PC)" : "");
++		}
++	}
+ }
+ 
+ /*
+@@ -1267,7 +1312,7 @@ abox_scan_words(vm_offset_t va, uint32_t len, uint32_t where, bool dram)
+ 		if (valid >= 8 && valid + zero >= 4090) {
+ 			printf("SWEET ABOX: L1 table? %s+%#x: %u entries\n", dram ? "dram" : "sram", where + t, valid);
+ 			unsigned shown = 0;
+-			for (uint32_t i = 0; i < 4096 && shown < 48; i++) {
++			for (uint32_t i = 0; i < 4096 && shown < 96; i++) {
+ 				uint32_t e = abox_sp(va + t + 4 * i);
+ 				if (e) {
+ 					printf("SWEET ABOX:   VA %#010x -> %#010x\n", i << 20, e);
