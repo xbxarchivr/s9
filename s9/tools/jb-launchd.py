@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Add the Galaxy S9 jailbreak jobs to an iOS root's launchd.plist.
 
-  jb-launchd.py MOUNTED_ROOT
+  jb-launchd.py MOUNTED_ROOT [LABEL ...]
+
+With labels, only those jobs are added (SpringBoard's DYLD_INSERT_LIBRARIES
+always is); the Exynos root uses just com.ios-s9.ellekit.
 
 This iOS boots with launchd_unsecure_cache=1: launchd reads its jobs from
 /System/Library/xpc/launchd.plist only (nothing loads /Library/LaunchDaemons),
@@ -78,11 +81,17 @@ INJECT = '/usr/lib/TweakInject.dylib'
 
 def main():
     path = os.path.join(sys.argv[1], 'System/Library/xpc/launchd.plist')
+    only = set(sys.argv[2:])    # LABEL ...: just these jobs (Exynos root: no bootstrap, no shell)
+    unknown = only - {job['Label'] for job in JOBS.values()}
+    if unknown:
+        sys.exit(f'unknown job label(s): {", ".join(sorted(unknown))}')
     st = os.stat(path)
     with open(path, 'rb') as f:
         plist = plistlib.load(f)
     daemons = plist['LaunchDaemons']
     for key, job in JOBS.items():
+        if only and job['Label'] not in only:
+            continue
         daemons[key] = job
         print('job', job['Label'])
     found = 0
