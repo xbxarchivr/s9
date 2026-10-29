@@ -974,3 +974,5 @@ Research (observed in sources): panel lcdtype 9503811 = 0x910443 = Samsung's `s6
 - Known residual risk: start.s's bootstrap V=P/KVA mappings cover memSize (whole span incl. the hole) with 32 MB L2 blocks until arm_vm_init switches tables (one L2 page per mapping: 64 GB per L1 with 16K pages, so no table overflow).
 - **0114 compiled** (run 40896591093, success): `out/exynos/xnu11/kernel.development.sweet` sha256 1acca22f... **Boot image `out/exynos/boot-ios15.img`** (sha256 9c90a31b...) = 0114 kernel + **4 GB ADT** (exynos-ufs-xr2-4g.adt) + boot-ios14 cmdline without sweetbl. Not flashed. Fallback: boot-ios14 (1.3 GB). Check: boots at all; 'pmap_startup() ... pages', hw.memsize ~3.3 GB.
 
+- boot-ios15 (4 GB) flashed 2026-10-29 with verified readback, rebooted into iOS. Result pending.
+
