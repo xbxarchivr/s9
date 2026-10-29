@@ -1081,3 +1081,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 
 - **boot-ios24 flashed** to BOOT (sda10), readback sha256 c3af3ae2... matches. Rebooted. Fallback boot-ios15.
 
+- **boot-ios24 result** (log s9/logs/boot-ios24.txt, not in git if ignored): DTZPC restore smc = 0; Q-channels read **0x3f0002** for sysreg/sysmmu/abox_aclk/gpio *before* any write (ENABLE=0 so no HW gating, CLOCK_REQ=1 already) -> clocks were already on; clock-gating hypothesis (b) **ruled out**. Log stops right after `reading sysreg 0x17c10000...` (same as ios23: the read still aborts/hangs; no panic text reaches sweetlog). Next: hypothesis (a) DTZPC save -> AUD PD off/on -> restore, or the access is blocked by TZPC for non-secure regardless (then do sysreg setup via SMC or skip the sysreg).
+
