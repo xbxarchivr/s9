@@ -1032,3 +1032,6 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 
 - boot-ios20 (tone on both OUT3 halves + rev A patch) flashed 2026-10-29 with verified readback, rebooted. Result pending.
 
+- **boot-ios20 RESULT: still silent (user).** Log (observed): all writes read back (MIX 0x8004/0x68 both halves, DAC3 0x68/0x68, PATH3L 0x1080, OUTEN 0x30, HP_CTRL_3L 0x1a0e); IRQ1 raw status 1-6 = 0x80 0x20 0 0 0 0 -> BOOT_DONE + MICD_CLAMP_FALL_STS1 (jack-detect clamp state).
+  - DT accdet `acc@1 reg = <2>`: jack detection is on OUT2 (HEADPHONE <- HPOUT2), so the clamp is the jack's, not OUT3's.
+  - **New reading (guess, to verify):** the MAX98512 node has `maxim,sub_reg = <0x3a>`, `spk-gain-rcv`, `digital-gain-rcv`, `mono_stereo` -> a second MAX98512 at I2C 0x3A drives the EARPIECE (S9 stereo speakers: bottom + earpiece), both fed by ABOX UAIF1. Then the codec's RECEIVER/HPOUT3 route is unused on this model and the codec's audible output is the 3.5 mm jack (HPOUT2). Next: probe I2C 0x3A (rev 0x0402) and send the tone to OUT2 (HPOUT2L/R, stereo) with wired headphones plugged in.
