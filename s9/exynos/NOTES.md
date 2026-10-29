@@ -1041,3 +1041,6 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 
 - boot-ios21 (headphone tone) flashed 2026-10-29 with verified readback, rebooted. Result pending.
 
+- **FIRST SOUND (boot-ios21, user heard the tone in wired headphones; log s9/logs/boot-ios21.txt):** CS47L93 Tone Generator 1 -> OUT2L/R (HPOUT2, headphone jack), SYSCLK from MCLK1 = PMU CLKOUT0 26 MHz. Log: `tone on: SYSCLK1 0x240 RATE1 0x3 TONE1 0x1 MIX 0x8004/0x68 0x8004/0x68 DAC2 0x50/0x50 PATH2L 0x80 OUTEN 0xc HPCTRL2L 0x1a0e CLAMP 0x210`; IRQ raw 0x80 0x20 (clamp flag present, did not block).
+- **Second MAX98512 confirmed at I2C 0x3A** (`second amp at 0x3a: rev 0x0402=65` = 0x41): the earpiece is the stereo-speaker amp, so the codec's OUT3/RECEIVER tries (boot-ios19/20) could not be heard. Speakers (bottom 0x39 + earpiece 0x3A) = ABOX UAIF1 -> MAX98512 x2.
+- Audio stages 1 and 2 done. Next: stage 3 ABOX (power/clocks are on, firmware + IPC + SysMMU) -> UAIF1 -> both amps; or a quicker step first: PCM to the headphones through the codec's AIF from ABOX UAIF0. Either way ABOX is next.
