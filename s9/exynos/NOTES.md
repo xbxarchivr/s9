@@ -826,3 +826,5 @@ Chlorophyll (ry-diffusion): Metal on Mesa freedreno for Adreno 630 (iOS 18 arm64
 
 - boot-ios9 flashed 2026-10-29 with verified readback, rebooted into iOS. Result pending.
 
+- **boot-ios9 result (observed, s9/logs/boot-ios9.txt): CPU DVFS WORKS.** A55 measured **1052 MHz** as S-Boot left it, **1793 MHz** 20 ms after FREQ_REQ cl0 1794000 on ACPM channel[0]. Raw replies: FREQ_GET -> `0x30000 0 0 0` (only the seq survives; GET is not answered with a rate on this channel), FREQ_REQ -> `0x60000 0x1b5fd0 0 0` (rate echoed). So: trust the add-chain measurement, not FREQ_GET. Present avg 6.4 ms, 10.6 fps in the second window (first window 2.4 fps = first boot after the USERDATA rewrite, caches being rebuilt). Crashes: driverkitd x1, PosterBoard x1 (first boot), no SpringBoard loop.
+- Next speed ideas: sweetmiffreq (MIF up to 2093000; effect only visible in present copy time since GET reads 0), sweetfb_hz above 10 now that the CPU is 1.7x faster, M3 big cores (CPU_ON never arrived, see X1.x).
