@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Galaxy S9 Exynos milestone X6: touchscreen probe. CPU0 only, MMU off.
  *
  * The G960F's touch controller is a Samsung LSI S6SY761 ("sec,sec_ts",
@@ -23,6 +23,13 @@
 #define RUN_SECONDS	60
 
 #define HSI2C		0x104B0000UL
+/*
+ * USI-v2: PERIC0 USI port 3 (spi/uart/hsi2c@104B0000) takes its protocol
+ * from this SYSREG word (stock DT usi@1041101C usi_v2_mode = "i2c"). Until
+ * it says I2C the HSI2C registers ignore writes (X6: CTL/CONF stayed 0).
+ */
+#define SYSREG_USI03	0x1041101CUL
+#define USI_I2C_SW_CONF	(1u << 2)
 #define PERIC1_GPG3	0x108300C0UL	/* CON +0, DAT +4, PUD +8 */
 #define ALIVE_GPA1	0x14050040UL
 #define TS_ADDR		0x48
@@ -234,7 +241,7 @@ void shim_main(uint64_t dtb)
 	if (!xp.fb_ok)
 		xp_reset();
 	con_clear(GREY);
-	con_title("EXYNOS X6 RUNS");
+	con_title("EXYNOS X6.1 RUNS");
 	con_str("MODEL", xp.model[0] ? xp.model : "(no DTB)");
 
 	/* what S-Boot left: pins, IRQ level, and the HSI2C block itself */
@@ -249,6 +256,13 @@ void shim_main(uint64_t dtb)
 	p = put_hex(put(p, " fifo "), hr(FIFO_STATUS), 8);
 	put_hex(put(p, " trans "), hr(TRANS_STATUS), 8);
 	con_str("HSI2C", b);
+
+	/* X6.1: select I2C on USI port 3, then the pins */
+	uint32_t usi_before = rd32(SYSREG_USI03);
+	wr32(SYSREG_USI03, USI_I2C_SW_CONF);
+	p = put_hex(put(b, "sysreg usi03 "), usi_before, 8);
+	put_hex(put(p, " -> "), rd32(SYSREG_USI03), 8);
+	con_str("USI", b);
 
 	/* GPG3-3/4 -> function 2 (hsi2c26-bus) */
 	uint32_t con = rd32(PERIC1_GPG3);
