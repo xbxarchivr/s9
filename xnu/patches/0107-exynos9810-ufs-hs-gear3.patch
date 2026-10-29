@@ -1,0 +1,193 @@
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index 2660ad8..db839ab 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -141,6 +141,22 @@ extern void sweet_usb_probe(void);
+ #define PA_TACTIVATE            0x15a8
+ #define RX_MIN_ACTIVATETIME_CAP 0x008f
+ #define PA_DBG_CLK_PERIOD       0x9514          /* UniPro MCLK period (ns) left by S-Boot */
++#define UIC_DME_PEER_GET        0x03
++#define IS_UPMS                 (1u << 4)       /* UIC power mode status */
++#define PA_ACTIVETXDATALANES    0x1560
++#define PA_TXGEAR               0x1568
++#define PA_TXTERMINATION        0x1569
++#define PA_HSSERIES             0x156a
++#define PA_PWRMODE              0x1571
++#define PA_ACTIVERXDATALANES    0x1580
++#define PA_RXGEAR               0x1583
++#define PA_RXTERMINATION        0x1584
++#define PA_MAXRXHSGEAR          0x1587
++#define UNIP_DME_PWR_IND_RESULT 0x78ec          /* UPMCRS (GET_UPMCRS_DIRECT) */
++#define PWR_LOCAL               1
++#define PMD_FAST                1               /* FAST_MODE, both directions: 0x11 */
++#define PA_HS_MODE_B            2
++#define EXY_HS_GEAR_MAX         3               /* exynos9810.dtsi ufs,pmd-attr-gear */
+ #define EXY_MCLK_FALLBACK       166500000u
+ #define EXY_RX_LANE_0           4
+ 
+@@ -544,6 +560,7 @@ exy_pma_write(uint32_t reg, uint32_t val)
+ enum {
+ 	L_PCS_COMN = 1, L_PCS_RX, L_PCS_TX, L_PCS_RX_PRD, L_PCS_TX_PRD, L_UNIPRO_STD,
+ 	L_UNIPRO_DBG, L_UNIPRO_DBG_PRD, L_PMA_COMN, L_PMA_TRSV, L_COMMON_WAIT,
++	L_UNIPRO_APB,                           /* UniPro register write (not DME) */
+ };
+ 
+ struct exy_cfg {
+@@ -578,6 +595,18 @@ static const struct exy_cfg exy_post_init_cfg[] = {
+ 	{ 0x0042, 0xac, L_PCS_RX }, { 0x0200, 0x00, L_PCS_COMN },
+ };
+ 
++/* ufs-cal-9810.c calib_of_hs_rate_b, the entries for HS-G3 x2 */
++static const struct exy_cfg exy_hs_g3_cfg[] = {
++	{ 0x2041, 8064, L_UNIPRO_STD }, { 0x2042, 28224, L_UNIPRO_STD },
++	{ 0x2043, 20160, L_UNIPRO_STD }, { 0x15b0, 12000, L_UNIPRO_STD },
++	{ 0x15b1, 32000, L_UNIPRO_STD }, { 0x15b2, 16000, L_UNIPRO_STD },
++	{ 0x7888, 8064, L_UNIPRO_APB }, { 0x788c, 28224, L_UNIPRO_APB },
++	{ 0x7890, 20160, L_UNIPRO_APB }, { 0x78b8, 12000, L_UNIPRO_APB },
++	{ 0x78bc, 32000, L_UNIPRO_APB }, { 0x78c0, 16000, L_UNIPRO_APB },
++	{ 0x00c8, 0xbc, L_PMA_TRSV }, { 0x00f0, 0x7f, L_PMA_TRSV }, { 0x0120, 0xc0, L_PMA_TRSV },
++	{ 0x0128, 0x00, L_PMA_TRSV }, { 0x0134, 0x63, L_PMA_TRSV },
++};
++
+ static int
+ exy_apply_cfg(const struct exy_cfg *cfg, unsigned n, uint32_t period)
+ {
+@@ -619,6 +648,11 @@ exy_apply_cfg(const struct exy_cfg *cfg, unsigned n, uint32_t period)
+ 					delay(v);
+ 				}
+ 				break;
++			case L_UNIPRO_APB:
++				if (i == 0) {
++					io_wr(su.unipro + a, v);
++				}
++				break;
+ 			}
+ 			if (r) {
+ 				printf("SWEET UFS: cal entry %u (0x%04x) lane %u: %d\n", j, a, i, r);
+@@ -826,6 +860,105 @@ exy_device_init(void)
+ 	return EIO;
+ }
+ 
++static uint32_t
++exy_pma_read(uint32_t reg)
++{
++	uint32_t c = vs_rd(VS_CLKSTOP);
++	vs_wr(VS_CLKSTOP, c & ~(1u << 3));
++	uint32_t v = ufs_rd(EXY_PMA + reg);
++	vs_wr(VS_CLKSTOP, c | (1u << 3));
++	return v;
++}
++
++/*
++ * Link startup leaves the link in PWM-G1 (a few Mbit/s per lane). Switch it
++ * to HS-G3 rate B on both lanes, FAST mode, as Linux does (exynos9810.dtsi
++ * ufs,pmd-attr-gear 3 / lane 2; ufshcd_change_power_mode with the
++ * ufs-cal-9810 pre/post PMC tables). Returns 0 or an errno; the link stays
++ * usable in PWM if the HS attempt is refused before the mode change.
++ */
++static int
++exy_power_mode(void)
++{
++	uint32_t rx_gear = 0, tx_gear = 0, mode = 0;
++
++	if (exy_dme_get(UIC_MIB(PA_MAXRXHSGEAR), &rx_gear) ||
++	    exy_uic(UIC_DME_PEER_GET, UIC_MIB(PA_MAXRXHSGEAR), 0, &tx_gear)) {
++		printf("SWEET UFS: cannot read the HS gear capabilities\n");
++		return EIO;
++	}
++	uint32_t gear = MIN(MIN(rx_gear, tx_gear), (uint32_t)EXY_HS_GEAR_MAX);
++	if (gear == 0) {
++		printf("SWEET UFS: no HS gear (rx %u tx %u)\n", rx_gear, tx_gear);
++		return ENOTSUP;
++	}
++
++	/* ufs_cal_pre_pmc: the table is for G3; lower gears differ only in PMA 0x128/0x134 */
++	int error = exy_apply_cfg(exy_hs_g3_cfg, sizeof(exy_hs_g3_cfg) / sizeof(exy_hs_g3_cfg[0]), 0);
++	if (error) {
++		return error;
++	}
++	if (exy_dme_set(UIC_MIB(PA_RXGEAR), gear) ||
++	    exy_dme_set(UIC_MIB(PA_ACTIVERXDATALANES), su.lanes) ||
++	    exy_dme_set(UIC_MIB(PA_RXTERMINATION), 1) ||
++	    exy_dme_set(UIC_MIB(PA_TXGEAR), gear) ||
++	    exy_dme_set(UIC_MIB(PA_ACTIVETXDATALANES), su.lanes) ||
++	    exy_dme_set(UIC_MIB(PA_TXTERMINATION), 1) ||
++	    exy_dme_set(UIC_MIB(PA_HSSERIES), PA_HS_MODE_B)) {
++		printf("SWEET UFS: power mode attributes refused\n");
++		return EIO;
++	}
++
++	/* the mode change itself completes with UIC power mode status (UPMS) */
++	int r = exy_uic(UIC_DME_SET, UIC_MIB(PA_PWRMODE), PMD_FAST << 4 | PMD_FAST, NULL);
++	bool upms = exy_wait(REG_IS, IS_UPMS, IS_UPMS, NSEC_PER_SEC);
++	ufs_wr(REG_IS, IS_UPMS);
++	uint32_t upmcrs = io_rd(su.unipro + UNIP_DME_PWR_IND_RESULT) & 0x7;
++	if (r || !upms || upmcrs != PWR_LOCAL) {
++		printf("SWEET UFS: power mode change failed (%d, upms %d, upmcrs %u)\n", r, upms, upmcrs);
++		return EIO;
++	}
++
++	/* ufs_cal_post_pmc: wait for CDR/AFC lock on each lane, re-kicking it */
++	for (uint32_t lane = 0; lane < su.lanes; lane++) {
++		uint32_t base = 0x140 * lane;
++		int i;
++		for (i = 0; i < 100; i++) {
++			delay(40);
++			if (exy_pma_read(base + 0x1fc) & 0x40) {
++				break;
++			}
++			delay(1);
++			exy_pma_write(base + 0xf0, 0x7f);
++			exy_pma_write(base + 0xf0, 0xff);
++		}
++		if (i == 100) {
++			printf("SWEET UFS: lane %u CDR/AFC did not lock\n", lane);
++			return EIO;
++		}
++	}
++	(void)exy_dme_get(UIC_MIB(PA_PWRMODE), &mode);
++	printf("SWEET UFS: power mode HS-G%u rate B, %u lanes (PA_PWRMODE 0x%x)\n", gear, su.lanes, mode);
++	return 0;
++}
++
++/* Time reading mib MiB from the start of the partition (boot-arg ufsbench=0: off). */
++static void
++exy_bench(const char *what, uint32_t mib)
++{
++	uint64_t t0 = mach_absolute_time(), ns;
++	uint32_t done = 0;
++
++	for (; done < mib; done++) {
++		if (ufs_read_blocks(su.first_block + done * (BOUNCE_SIZE / UFS_BLOCK), BOUNCE_SIZE / UFS_BLOCK)) {
++			break;
++		}
++	}
++	absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
++	printf("SWEET UFS: %s: read %u MiB in %llu ms (%llu KiB/s)\n", what, done, ns / NSEC_PER_MSEC,
++	    ns ? (uint64_t)done * 1024 * NSEC_PER_SEC / ns : 0);
++}
++
+ static int
+ ufs_take_over_host(void)
+ {
+@@ -1149,6 +1282,20 @@ sweet_ufs_init(void)
+ 	if (!error) {
+ 		error = ufs_find_partition(want);
+ 	}
++	if (!error && su.exynos) {
++		uint32_t hs = 1, bench = 1;
++		PE_parse_boot_argn("ufshs", &hs, sizeof(hs));
++		PE_parse_boot_argn("ufsbench", &bench, sizeof(bench));
++		if (bench) {
++			exy_bench("PWM-G1", 4);
++		}
++		if (hs && exy_power_mode() == 0 && bench) {
++			exy_bench("HS", 64);
++		}
++		/* a failed HS attempt must not cost the root: is the link still usable? */
++		static const uint8_t tur[6] = { 0x00 };
++		error = ufs_scsi(tur, sizeof(tur), 0, false);
++	}
+ 	lck_mtx_unlock(&sweet_ufs_lock);
+ 	if (error) {
+ 		if (su.exynos) {
