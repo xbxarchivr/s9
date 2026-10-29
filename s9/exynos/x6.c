@@ -206,117 +206,128 @@ static int hsi2c_msg(uint8_t addr, int rd, uint8_t *buf, unsigned len)
 }
 
 /*
- * X6.5: read-only access to the S2MPS18 PMIC over SPEEDY (0x141C0000) through
- * its IP batcher, which takes the hardware semaphore shared with the APM
- * firmware, so these reads never collide with the APM's own PMIC traffic
- * (i2c-speedy.c exynos_speedy_xfer_batcher, read direction, single access).
- * The batcher runs a table: opcode byte = SPEEDY register offset, payload =
- * value; the RX_DATA entry's payload slot receives the byte read.
- * Addresses are 12 bit; assumed (page << 8) | reg with the PMIC page 0x01.
+ * X6.6: the batcher faulted (X6.5: external abort at SPEEDY + 0x500): the
+ * PMIC belongs to the APM firmware. Talk to it as Linux does, ACPM IPC
+ * (drivers/soc/samsung/acpm/acpm_ipc.c + acpm_mfd.c, polling): stock DT
+ * acpm_ipc reg = mailbox 0x14100000, APM SRAM 0x02039000, initdata-base
+ * 0x7F00; s2mps18mfd acpm-ipc-channel 2. struct acpm_framework (u32
+ * fields): ipc_channels +0x08 (SRAM offset of the table), num +0x0C,
+ * ipc_ap_max +0x18. struct ipc_channel = 18 words: id, field, owner, type,
+ * channel_info { rx_rear, rx_front, rx_base, rx_indr_buf, rx_indr_buf_base,
+ * rx_indr_buf_size, tx_rear, tx_front, tx_base, q_len, q_elem_size, credit,
+ * mbox_addr }, ap_poll. The AP sends on the APM's rx queue and receives on
+ * its tx queue. MFD read: cmd[0] = type << 8 | reg (+ seq << 16), cmd[1] =
+ * FUNC_READ (0); reply cmd[1]: byte at bits 8-15, status at bits 24-31.
+ * Only reads (FUNC_READ) are sent here.
  */
-#define SPEEDY			0x141C0000UL
-#define SP_CTRL			0x000
-#define SP_FIFO_CTRL		0x004
-#define SP_CMD			0x008
-#define SP_INT_ENABLE		0x00C
-#define SP_INT_STATUS		0x010
-#define SP_RX_DATA		0x038
-#define IPB_CON			0x500
-#define IPB_STATE		0x504
-#define IPB_INT_EN		0x508
-#define IPB_FSM_UNEXPEN		0x50C
-#define IPB_FSM_TXEN		0x510
-#define IPB_FSM_RXFIFO		0x514
-#define IPB_FSM_CON		0x518
-#define IP_INT_STATUS		0x520
-#define IPB_OPCODE		0x600
-#define IPB_PAYLOAD		0x1000
-#define IPB_ENABLE_APB		(1u << 0 | 1u << 1)	/* BATCHER_ENABLE | DEDICATED_BATCHER_APB */
-#define IPB_START		(1u << 4)
-#define IPB_SW_RESET		(1u << 31)
-#define IPB_DONE		(1u << 0)
-#define IPB_UNEXPECTED		(1u << 1)
-#define SP_ERRS			(0xeu | 0x7u << 16 | 0x3u << 20)	/* timeouts, rx/tx errors */
+#define ACPM_MBOX	0x14100000UL
+#define ACPM_SRAM	0x02039000UL
+#define ACPM_INITDATA	(ACPM_SRAM + 0x7f00)
+#define MBOX_INTGR0	0x08
+#define MBOX_INTCR1	0x20
+#define MBOX_INTSR1	0x28
+#define ACPM_MFD_CH	2
 
-static uint32_t sp_cmdbuf, sp_cmdidx, sp_cmdptr, sp_desc;
+struct acpm_q { uintptr_t rear, front, base; uint32_t len, size; };
+static struct acpm_q acpm_tx, acpm_rx;
+static uint32_t acpm_id, acpm_seq, acpm_poll;
 
-static void sp_batch(uint32_t payload, uint32_t opcode)
+/* 0: channel found; prints what the APM firmware published */
+static int acpm_init(char *b)
 {
-	sp_cmdbuf &= ~(0xffu << (8 * sp_cmdidx));
-	sp_cmdbuf |= opcode << (8 * sp_cmdidx);
-	wr32(SPEEDY + IPB_OPCODE + 4 * sp_cmdptr, sp_cmdbuf);
-	wr32(SPEEDY + IPB_PAYLOAD + 4 * sp_desc, payload);
-	sp_cmdidx++;
-	sp_desc++;
-	if (sp_cmdidx == 4) {
-		sp_cmdidx = 0;
-		sp_cmdptr++;
-		sp_cmdbuf = 0xffffffffu;
+	char *p;
+	uint32_t tbl = rd32(ACPM_INITDATA + 0x08), nch = rd32(ACPM_INITDATA + 0x0c);
+	uint32_t apmax = rd32(ACPM_INITDATA + 0x18);
+	p = put_hex(put(b, "tbl "), tbl, 8);
+	p = put_dec(put(p, " nch "), nch);
+	p = put_dec(put(p, " ap_max "), apmax);
+	p = put_hex(put(p, " fw_size "), rd32(ACPM_INITDATA + 0x58), 8);
+	con_str("ACPM", b);
+	if (!tbl || tbl >= 0x30000 || !apmax || apmax > 32)
+		return 1;
+	for (uint32_t i = 0; i < apmax; i++) {
+		uintptr_t e = ACPM_SRAM + tbl + 72 * i;
+		if (rd32(e) != ACPM_MFD_CH)
+			continue;
+		acpm_id = rd32(e);
+		acpm_tx.rear = ACPM_SRAM + rd32(e + 16);	/* ch.rx_rear */
+		acpm_tx.front = ACPM_SRAM + rd32(e + 20);	/* ch.rx_front */
+		acpm_tx.base = ACPM_SRAM + rd32(e + 24);	/* ch.rx_base */
+		acpm_rx.rear = ACPM_SRAM + rd32(e + 40);	/* ch.tx_rear */
+		acpm_rx.front = ACPM_SRAM + rd32(e + 44);	/* ch.tx_front */
+		acpm_rx.base = ACPM_SRAM + rd32(e + 48);	/* ch.tx_base */
+		acpm_tx.len = acpm_rx.len = rd32(e + 52);	/* q_len */
+		acpm_tx.size = acpm_rx.size = rd32(e + 56);	/* q_elem_size */
+		acpm_poll = rd32(e + 68);
+		p = put_dec(put(b, "ch "), acpm_id);
+		p = put_dec(put(p, " qlen "), acpm_tx.len);
+		p = put_dec(put(p, " esz "), acpm_tx.size);
+		p = put_dec(put(p, " poll "), acpm_poll);
+		p = put_dec(put(p, " tx f/r "), rd32(acpm_tx.front));
+		p = put_dec(put(p, "/"), rd32(acpm_tx.rear));
+		p = put_dec(put(p, " rx f/r "), rd32(acpm_rx.front));
+		put_dec(put(p, "/"), rd32(acpm_rx.rear));
+		con_str("", b);
+		return acpm_tx.len && acpm_tx.size >= 8 && acpm_tx.size <= 64 ? 0 : 3;
 	}
+	return 2;
 }
 
-/* exynos_speedy_probe: batcher reset + which IP bits it monitors */
-static void sp_init(void)
+/* one PMIC register read through the APM: byte, or -1 timeout, -2 no queue space, -(0x100 + status) */
+static int acpm_pmic_read(uint32_t type, uint32_t reg)
 {
-	wr32(SPEEDY + IPB_CON, rd32(SPEEDY + IPB_CON) | IPB_SW_RESET);
-	wr32(SPEEDY + IPB_CON, rd32(SPEEDY + IPB_CON) & ~IPB_SW_RESET);
-	wr32(SPEEDY + IPB_FSM_UNEXPEN, SP_ERRS);
-	wr32(SPEEDY + IPB_FSM_TXEN, 1u << 0 | 1u << 4);	/* TRANSFER_DONE, TX_ALMOST_EMPTY */
-	wr32(SPEEDY + IPB_FSM_RXFIFO, 1u << 6);		/* FIFO_EMPTY */
-	wr32(SPEEDY + IPB_FSM_CON, 1u << 0);		/* DISABLE_STOP_CMD */
-}
+	uint32_t front = rd32(acpm_tx.front), next = (front + 1) % acpm_tx.len;
+	uint64_t end = xp_now() + xp.cntfrq / 10;	/* 100 ms */
 
-static uint32_t sp_last_state, sp_last_int;
+	while (next == rd32(acpm_tx.rear))		/* queue full */
+		if (xp_now() > end)
+			return -2;
+	if (++acpm_seq == 64)
+		acpm_seq = 1;
+	uint32_t cmd0 = (type & 0xf) << 8 | (reg & 0xff) | acpm_seq << 16;
+	uintptr_t slot = acpm_tx.base + acpm_tx.size * front;
+	wr32(slot, cmd0);
+	for (uint32_t o = 4; o < acpm_tx.size; o += 4)
+		wr32(slot + o, 0);			/* cmd[1] = FUNC_READ (0) */
+	dsb();
+	wr32(acpm_tx.front, next);
+	wr32(ACPM_MBOX + MBOX_INTGR0, (1u << acpm_id) << 16);	/* ring the APM */
 
-/* one byte from 12-bit SPEEDY address a; -1 on timeout, -2 on error */
-static int sp_read(uint32_t a)
-{
-	sp_cmdbuf = 0xffffffffu;
-	sp_cmdidx = sp_cmdptr = sp_desc = 0;
-	wr32(SPEEDY + IPB_CON, 0);				/* idle */
-	wr32(SPEEDY + IPB_CON, IPB_ENABLE_APB);		/* idle -> init */
-	sp_batch(0x30051, SP_CTRL);				/* SPEEDY enable */
-	sp_batch(1u << 31 | 1u << 8 | 1u, SP_FIFO_CTRL);	/* FIFO reset, TX/RX trigger 1 */
-	sp_batch(0xffffffffu, SP_INT_STATUS);
-	sp_batch(0xeu | 1u << 8 | 1u << 9 | 0x7u << 16, SP_INT_ENABLE);
-	sp_batch((a & 0xfff) << 7 | 1u << 19, SP_CMD);	/* random access, read */
-	uint32_t rx_slot = sp_desc;
-	sp_batch(0x77, SP_RX_DATA);
-	sp_batch(0, 0xff);					/* end of table */
-	wr32(SPEEDY + IPB_INT_EN, 1);
-	wr32(SPEEDY + IPB_CON, rd32(SPEEDY + IPB_CON) | IPB_START);
-	int r = -1;
-	uint64_t end = xp_now() + xp.cntfrq / 2;		/* 500 ms */
+	end = xp_now() + xp.cntfrq / 10;
 	while (xp_now() < end) {
-		sp_last_state = rd32(SPEEDY + IPB_STATE);
-		sp_last_int = rd32(SPEEDY + IP_INT_STATUS);
-		if (sp_last_state & IPB_DONE) {
-			r = (sp_last_int & SP_ERRS) ? -2 : 0;
-			break;
-		}
-		if ((sp_last_state & IPB_UNEXPECTED) && (sp_last_int & SP_ERRS)) {
-			r = -2;
-			break;
+		if (!(rd32(ACPM_MBOX + MBOX_INTSR1) & 1u << acpm_id))
+			continue;
+		uint32_t rear = rd32(acpm_rx.rear), rfront = rd32(acpm_rx.front);
+		for (uint32_t i = rear; i != rfront; i = (i + 1) % acpm_rx.len) {
+			uintptr_t r = acpm_rx.base + acpm_rx.size * i;
+			if ((rd32(r) >> 16 & 0x3f) != acpm_seq)
+				continue;
+			uint32_t cmd1 = rd32(r + 4);
+			if (i != rear)			/* keep the queue compact, as check_response */
+				for (uint32_t o = 0; o < acpm_rx.size; o += 4)
+					wr32(r + o, rd32(acpm_rx.base + acpm_rx.size * rear + o));
+			rear = (rear + 1) % acpm_rx.len;
+			wr32(acpm_rx.rear, rear);
+			if (rear == rd32(acpm_rx.front))
+				wr32(ACPM_MBOX + MBOX_INTCR1, 1u << acpm_id);
+			uint32_t st = cmd1 >> 24 & 0xff;
+			return st ? -(int)(0x100 + st) : (int)(cmd1 >> 8 & 0xff);
 		}
 	}
-	if (sp_last_state & IPB_DONE)
-		wr32(SPEEDY + IPB_STATE, sp_last_state | IPB_DONE);
-	wr32(SPEEDY + IPB_INT_EN, 0);
-	int v = r ? r : (int)(rd32(SPEEDY + IPB_PAYLOAD + 4 * rx_slot) & 0xff);
-	wr32(SPEEDY + IPB_CON, 0);
-	return v;
+	return -1;
 }
 
-static char *put_sp(char *p, const char *name, uint32_t a)
+static char *put_pmic(char *p, const char *name, uint32_t reg)
 {
-	int v = sp_read(a);
+	int v = acpm_pmic_read(1, reg);
 	p = put(put(p, name), " ");
-	if (v < 0) {
-		p = put(p, v == -1 ? "timeout st " : "error st ");
-		p = put_hex(p, sp_last_state, 8);
-		return put(put_hex(put(p, " is "), sp_last_int, 8), "  ");
-	}
-	return put(put_hex(p, (uint32_t)v, 2), "  ");
+	if (v >= 0)
+		return put(put_hex(p, (uint32_t)v, 2), "  ");
+	if (v == -1)
+		return put(p, "timeout  ");
+	if (v == -2)
+		return put(p, "full  ");
+	return put(put_hex(put(p, "st "), (uint32_t)(-v - 0x100), 2), "  ");
 }
 
 /*
@@ -473,7 +484,7 @@ void shim_main(uint64_t dtb)
 	if (!xp.fb_ok)
 		xp_reset();
 	con_clear(GREY);
-	con_title("EXYNOS X6.5 RUNS");
+	con_title("EXYNOS X6.6 RUNS");
 	con_str("MODEL", xp.model[0] ? xp.model : "(no DTB)");
 
 	/* what S-Boot left: pins, IRQ level, and the HSI2C block itself */
@@ -489,18 +500,19 @@ void shim_main(uint64_t dtb)
 	put_hex(put(p, " trans "), hr(TRANS_STATUS), 8);
 	con_str("HSI2C", b);
 
-	/* X6.5: PMIC over SPEEDY, reads only: ID, LDO1 (expected on), LDO35, LDO43 */
-	p = put_hex(put(b, "ctrl "), rd32(SPEEDY + SP_CTRL), 8);
-	p = put_hex(put(p, " ipb con "), rd32(SPEEDY + IPB_CON), 8);
-	put_hex(put(p, " state "), rd32(SPEEDY + IPB_STATE), 8);
-	con_str("SPEEDY", b);
-	sp_init();
-	p = put_sp(b, "id", 0x100);
-	put_sp(p, "l1ctrl", 0x149);
-	con_str("PMIC", b);
-	p = put_sp(b, "l35ctrl", 0x16c);
-	put_sp(p, "l43ctrl", 0x174);
-	con_str("", b);
+	/* X6.6: PMIC through the APM firmware (ACPM IPC), reads only */
+	r = acpm_init(b);
+	if (r) {
+		put_dec(put(b, "no usable channel 2, rc "), r);
+		con_str("", b);
+	} else {
+		p = put_pmic(b, "id", 0x00);
+		put_pmic(p, "l1ctrl", 0x49);
+		con_str("PMIC", b);
+		p = put_pmic(b, "l35ctrl", 0x6c);
+		put_pmic(p, "l43ctrl", 0x74);
+		con_str("", b);
+	}
 
 	/* X6.1: select I2C on USI port 3, then the pins */
 	uint32_t usi_before = rd32(SYSREG_USI03);
