@@ -1100,3 +1100,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
   - Unknown: whether the ABOX CPU clock (PLL_AUD) runs as S-Boot left it; the log shows it.
 - **0125 compiled** (run 40961166687, success): `out/exynos/xnu22/kernel.development.sweet` sha256 4df872ed... **Boot image `out/exynos/boot-ios26.img`** (sha256 054da497...) = boot-ios25 cmdline with **sweetaudio=4** + `--blob Calliope-SRAM/-DRAM/-IVA` (s9/out/firmware). Not flashed. Fallback: boot-ios25 (boots iOS) / boot-ios15.
 
+- **boot-ios26 flashed** to BOOT (sda10), readback sha256 054da497... matches. Rebooted. Fallback boot-ios25 / boot-ios15.
+
