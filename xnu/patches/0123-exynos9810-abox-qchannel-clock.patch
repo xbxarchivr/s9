@@ -1,0 +1,35 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 5d8a809..a2700d6 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -961,6 +961,30 @@ exy_abox_probe(void)
+ 	touch_wait(11000);         /* past one 10 s log flush, as for the reads */
+ 	int64_t tz = exy_smc(0x82000410, 1, 0x17c10204, 0);
+ 	printf("SWEET ABOX: DTZPC restore smc(0x82000410, 1, 0x17c10204) = %lld\n", tz);
++	/*
++	 * boot-ios23: the restore returned 0 and the sysreg read still aborted.
++	 * Its clock goes through a Q-channel in CMU_AUD (0x17C00000,
++	 * exynos9810/cmucal-sfr.c): QCH_CON_SYSREG_AUD_QCH 0x3064, SYSMMU_AUD
++	 * 0x3060, ABOX ACLK 0x3024, GPIO_AUD 0x304C; bit 0 ENABLE (hardware
++	 * gating), bit 1 CLOCK_REQ (manual request), bit 2 IGNORE_FORCE_PM_EN,
++	 * [25:16] EXPIRE_VAL. With gating on and no request the clock may be off
++	 * when the AP reads: for the sysreg and the SysMMU, request it
++	 * manually (CLOCK_REQ 1, ENABLE 0) before their reads.
++	 */
++	vm_offset_t cmu = ml_io_map(0x17c00000, 0x4000);
++	if (!cmu) {
++		return;
++	}
++	printf("SWEET ABOX: reading CMU_AUD Q-channels...\n");
++	touch_wait(11000);
++	uint32_t q_sys = touch_rd(cmu, 0x3064), q_mmu = touch_rd(cmu, 0x3060);
++	printf("SWEET ABOX: QCH sysreg %#x sysmmu %#x abox_aclk %#x gpio %#x\n",
++	    q_sys, q_mmu, touch_rd(cmu, 0x3024), touch_rd(cmu, 0x304c));
++	touch_wr(cmu, 0x3064, (q_sys & ~1u) | 2u);
++	touch_wr(cmu, 0x3060, (q_mmu & ~1u) | 2u);
++	delay(100);
++	printf("SWEET ABOX: QCH now sysreg %#x sysmmu %#x (CLOCK_REQ on, gating off)\n",
++	    touch_rd(cmu, 0x3064), touch_rd(cmu, 0x3060));
+ 	printf("SWEET ABOX: reading sysreg 0x17c10000...\n");
+ 	touch_wait(11000);         /* past one 10 s log flush: a hang leaves this line on UFS */
+ 	printf("SWEET ABOX: sysreg misc_con %#x l2_cache_con %#x\n", touch_rd(sys, 0x32c), touch_rd(sys, 0x328));
