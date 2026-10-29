@@ -1060,3 +1060,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
   - Cause (strong guess): the ABOX sysreg block is TrustZone-protected: DT pd-aud has `need_smc = <0x17c10204>` (inside 0x17C10000), i.e. Samsung's kernel accesses it through the secure monitor (exynos_smc register read/write), not directly. Never read 0x17C10000 directly again.
   - boot-ios22 freezes during boot: do not leave it on BOOT; fall back to boot-ios15/21.
   - Next: SysMMU (0x17E00000) read on its own; ABOX sysreg via SMC (find Samsung's SMC_CMD_REG / SMC_REG_ID_SFR_R/W ids in include/soc/samsung/exynos-smc.h of the S9 kernel).
+  - User: boot-ios22 **kernel panicked** (not just froze) at that read - consistent with an SError from a TrustZone-protected access. Panic text not in the sweetlog (last flush was before the read).
+
