@@ -1007,3 +1007,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 - boot-ios17 flashed 2026-10-29 with verified readback, rebooted into iOS. Result pending.
 
 - **Stage 1b RESULT (boot-ios17, log s9/logs/boot-ios17.txt, observed):** same pd-aud/LDO/MAX98512 lines as boot-ios16; `CS47L93 SPI con 0, reset released for the read, register 0 = 0 (expect 0x6371), revision 0`. GPP0 con 0 = USI2 pins were plain inputs (S-Boot never set SPI function). MISO sampled 0 throughout. Leading suspect: pin roles (CLK/MISO/MOSI = GPP0-6/5/4 was inferred from Samsung's DT ordering, not a datasheet). Next: try the 6 CLK/MOSI/MISO permutations of GPP0-4/5/6 (CS fixed GPP0-7), log MISO idle level and each read; worst case of a wrong permutation is a garbled transfer (floating MOSI ~ write of 0 to register 0 = soft reset).
+- **Patch 0117 (written):** the CS47L93 SPI step tries all 6 CLK/MOSI/MISO orders of GPP0-4/5/6 (CS GPP0-7), logs the idle levels of GPP0-4/5/6 and register 0 for each order ('<-- MATCH' at 0x6371); codec reset released only for the reads.
+

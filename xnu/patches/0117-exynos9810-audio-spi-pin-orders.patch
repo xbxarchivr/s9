@@ -1,0 +1,74 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index bdecf0f..84b3330 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -825,33 +825,53 @@ exy_audio_probe(void)
+ 		apin_dat(&rst, 1);
+ 		delay(20000);
+ 	}
+-	struct apin mosi = {p0, EXY_GPP0, 4}, miso = {p0, EXY_GPP0, 5}, clk = {p0, EXY_GPP0, 6}, cs = {p0, EXY_GPP0, 7};
+-	uint32_t c0 = touch_rd(p0, EXY_GPP0), d0 = touch_rd(p0, EXY_GPP0 + 4);
++	/*
++	 * Which of GPP0-4/5/6 is CLK, MOSI, MISO is inferred, not documented
++	 * (boot-ios17: the 6/4/5 guess read 0). Try every order (CS = GPP0-7
++	 * from the DT) and log register 0 for each; the order that reads 0x6371
++	 * is the wiring. A wrong order garbles one transfer at most.
++	 */
++	static const uint8_t order[6][3] = {    /* clk, mosi, miso */
++		{6, 4, 5}, {6, 5, 4}, {4, 5, 6}, {4, 6, 5}, {5, 4, 6}, {5, 6, 4},
++	};
++	struct apin cs = {p0, EXY_GPP0, 7};
++	uint32_t c0 = touch_rd(p0, EXY_GPP0), d0 = touch_rd(p0, EXY_GPP0 + 4), u0 = touch_rd(p0, EXY_GPP0 + 8);
+ 	apin_dat(&cs, 1);
+-	apin_dat(&clk, 0);
+-	apin_dat(&mosi, 0);
+ 	apin_con(&cs, 1);
+-	apin_con(&clk, 1);
+-	apin_con(&mosi, 1);
+-	apin_con(&miso, 0);
+-	delay(10);
+-	uint32_t val[2];
+-	for (uint32_t reg = 0; reg < 2; reg++) {        /* 0 silicon ID, 1 hardware revision */
++	for (unsigned n = 4; n <= 6; n++) {
++		struct apin pn = {p0, EXY_GPP0, n};
++		apin_con(&pn, 0);
++	}
++	delay(20);
++	printf("SWEET AUDIO: CS47L93 SPI con %#x pud %#x, idle gpp0-4/5/6 = %u/%u/%u\n", c0, u0,
++	    (touch_rd(p0, EXY_GPP0 + 4) >> 4) & 1, (touch_rd(p0, EXY_GPP0 + 4) >> 5) & 1,
++	    (touch_rd(p0, EXY_GPP0 + 4) >> 6) & 1);
++	for (int k = 0; k < 6; k++) {
++		struct apin clk = {p0, EXY_GPP0, order[k][0]}, mosi = {p0, EXY_GPP0, order[k][1]};
++		struct apin miso = {p0, EXY_GPP0, order[k][2]};
++		apin_dat(&clk, 0);
++		apin_dat(&mosi, 0);
++		apin_con(&miso, 0);
++		apin_con(&clk, 1);
++		apin_con(&mosi, 1);
++		delay(10);
+ 		apin_dat(&cs, 0);
+ 		delay(5);
+-		(void)aspi_bits(&clk, &mosi, &miso, 0x80000000u | reg, 32);    /* read flag + address */
+-		(void)aspi_bits(&clk, &mosi, &miso, 0, 16);                     /* pad */
+-		val[reg] = aspi_bits(&clk, &mosi, &miso, 0, 16);
++		(void)aspi_bits(&clk, &mosi, &miso, 0x80000000u, 32);   /* read flag + register 0 */
++		(void)aspi_bits(&clk, &mosi, &miso, 0, 16);             /* pad */
++		uint32_t id = aspi_bits(&clk, &mosi, &miso, 0, 16);
+ 		apin_dat(&cs, 1);
+-		delay(5);
++		apin_con(&clk, 0);
++		apin_con(&mosi, 0);
++		delay(10);
++		printf("SWEET AUDIO: CS47L93 clk=gpp0-%u mosi=gpp0-%u miso=gpp0-%u: register 0 = %#x%s\n",
++		    order[k][0], order[k][1], order[k][2], id, id == 0x6371 ? "  <-- MATCH" : "");
+ 	}
+ 	touch_wr(p0, EXY_GPP0 + 4, d0);
+ 	touch_wr(p0, EXY_GPP0, c0);
+ 	if (was_reset) {
+ 		apin_dat(&rst, 0);              /* back as S-Boot left it */
+ 	}
+-	printf("SWEET AUDIO: CS47L93 SPI con %#x, reset %s, register 0 = %#x (expect 0x6371), revision %#x\n",
+-	    c0, was_reset ? "released for the read" : "already released", val[0], val[1]);
+ }
+ 
+ /*
