@@ -1,0 +1,210 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index c08c72f..40a0222 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -36,6 +36,7 @@
+ #include <kern/sched_prim.h>
+ #include <machine/machine_routines.h>
+ #include <pexpert/pexpert.h>
++#include <pexpert/device_tree.h>
+ #include <sys/sysctl.h>
+ extern int sweet_is_exynos(void);
+ #include <libkern/OSAtomic.h>
+@@ -1086,6 +1087,187 @@ open:
+ 	abox_peek("mmu+0x34", mmu + 0x34, 0x17e00034);
+ }
+ 
++/*
++ * Stage 3b (sweetaudio=4): boot the ABOX DSP (Calliope firmware) the way
++ * abox.c abox_enable() does on the 9810, polling instead of interrupts.
++ *
++ * Firmware: tools/mkpayload.py --blob loads calliope_{sram,dram,iva}.bin
++ * after the kernel and records /chosen/memory-map Calliope-SRAM/-DRAM/-IVA
++ * = <phys, exact size> (the files stay out of git and CI).
++ *
++ * Memory: the firmware runs at ABOX IOVA 0x80000000 (abox.h
++ * IOVA_DRAM_FIRMWARE, 18 MB), IVA at 0x90000000, VSS at 0xA0000000/
++ * 0xA1000000, and reads 0x10000000 one to one. SysMMU_AUD is off at boot
++ * (CTRL 0x4, boot-ios25), where IOVA 0x80000000 would be the PA of
++ * sec_debug_magic, so the SysMMU gets a 1 MB-section table (exynos-iommu.h:
++ * 4096 entries, entry = pa >> 4 | 2; PT_BASE_PPN = table >> 12) that sends
++ * those IOVAs into Android's abox_rmem 0xfb200000 + 40 MB, which lies in the
++ * RAM hole XNU never uses (mkadt.py RAM4G_HOLE).
++ */
++#define ABOX_RMEM_PA     0xfb200000u
++#define ABOX_RMEM_SIZE   0x2800000u
++#define ABOX_RM_DRAM     0x0000000u     /* 18 MB  -> IOVA 0x80000000 */
++#define ABOX_RM_IVA      0x1200000u     /* 1 MB   -> IOVA 0x90000000 */
++#define ABOX_RM_RDMA     0x1300000u     /* 8 MB   -> IOVA 0x91000000 */
++#define ABOX_RM_VSS      0x1b00000u     /* 6 MB   -> IOVA 0xA0000000 (zeroed) */
++#define ABOX_RM_VPARAM   0x2100000u     /* 1 MB   -> IOVA 0xA1000000 (zeroed) */
++#define ABOX_RM_PGTABLE  0x2200000u     /* 16 KB level-1 table */
++#define ABOX_DRAM_FW_SIZE  0x1200000u
++#define ABOX_IVA_FW_SIZE   0x80000u
++#define ABOX_SRAM_SIZE     0x31000u     /* DT abox reg "sram" */
++
++/* copy/fill with aligned 32-bit stores: these mappings are Device memory */
++static void
++abox_copy(vm_offset_t dst, const uint8_t *src, uint32_t len, uint32_t total)
++{
++	uint32_t i;
++	for (i = 0; i + 4 <= len; i += 4) {
++		*(volatile uint32_t *)(dst + i) = (uint32_t)src[i] | (uint32_t)src[i + 1] << 8 |
++		    (uint32_t)src[i + 2] << 16 | (uint32_t)src[i + 3] << 24;
++	}
++	if (i < len) {
++		uint32_t v = 0;
++		for (uint32_t k = 0; i + k < len; k++) {
++			v |= (uint32_t)src[i + k] << (8 * k);
++		}
++		*(volatile uint32_t *)(dst + i) = v;
++		i += 4;
++	}
++	for (; i < total; i += 4) {
++		*(volatile uint32_t *)(dst + i) = 0;
++	}
++	__asm__ volatile("dsb sy" ::: "memory");
++}
++
++static const uint8_t *
++abox_blob(const char *name, uint32_t *size)
++{
++	DTEntry mm;
++	const uint64_t *prop;
++	unsigned int psize;
++	if (SecureDTLookupEntry(NULL, "/chosen/memory-map", &mm) != kSuccess ||
++	    SecureDTGetProperty(mm, name, (const void **)&prop, &psize) != kSuccess ||
++	    psize != 16) {
++		printf("SWEET ABOX: no %s in /chosen/memory-map (mkpayload.py --blob)\n", name);
++		return NULL;
++	}
++	*size = (uint32_t)prop[1];
++	printf("SWEET ABOX: %s at %#llx, %u bytes\n", name, prop[0], *size);
++	return (const uint8_t *)ml_static_ptovirt((vm_offset_t)prop[0]);
++}
++
++static void
++exy_abox_boot(void)
++{
++	uint32_t sram_len = 0, dram_len = 0, iva_len = 0;
++	const uint8_t *fw_sram = abox_blob("Calliope-SRAM", &sram_len);
++	const uint8_t *fw_dram = abox_blob("Calliope-DRAM", &dram_len);
++	const uint8_t *fw_iva = abox_blob("Calliope-IVA", &iva_len);
++	if (!fw_sram || !fw_dram || sram_len > ABOX_SRAM_SIZE || dram_len > ABOX_DRAM_FW_SIZE ||
++	    (fw_iva && iva_len > ABOX_IVA_FW_SIZE)) {
++		printf("SWEET ABOX: firmware missing or too large\n");
++		return;
++	}
++	vm_offset_t pmu = ml_io_map(EXY_PMU_PA, 0x5000);
++	vm_offset_t sfr = ml_io_map(0x17c50000, 0x4000), sys = ml_io_map(0x17c10000, PAGE_SIZE);
++	vm_offset_t mmu = ml_io_map(0x17e00000, PAGE_SIZE), cmu = ml_io_map(0x17c00000, 0x4000);
++	vm_offset_t gic = ml_io_map(0x17cf0000, 0x4000), sram = ml_io_map(0x17d00000, ABOX_SRAM_SIZE);
++	vm_offset_t rm = ml_io_map(ABOX_RMEM_PA, ABOX_RMEM_SIZE);
++	if (!pmu || !sfr || !sys || !mmu || !cmu || !gic || !sram || !rm) {
++		printf("SWEET ABOX: mappings failed\n");
++		return;
++	}
++	uint32_t v;
++	/* every block is read once through the bus-error-safe path first */
++	if (!abox_peek("rmem", rm, ABOX_RMEM_PA) || !abox_peek("gicd", gic + 0x1000, 0x17cf1000) ||
++	    !abox_peek("sram", sram, 0x17d00000) || !abox_peek("sysmmu", mmu, 0x17e00000) ||
++	    !abox_peek("misc_con", sys + 0x32c, 0x17c1032c)) {
++		printf("SWEET ABOX: a block refuses the AP, not booting\n");
++		return;
++	}
++	printf("SWEET ABOX: CMU_AUD pll_con0 %#x mux_cpu %#x div_cpu_aclk %#x mux_cpu_user %#x\n",
++	    touch_rd(cmu, 0x120), touch_rd(cmu, 0x1000), touch_rd(cmu, 0x180c), touch_rd(cmu, 0x100));
++	printf("SWEET ABOX: PMU cpu_config %#x cpu_status %#x cpu_option %#x pad_ret %#x gpio_mode %#x\n",
++	    touch_rd(pmu, 0x415c), touch_rd(pmu, 0x4160), touch_rd(pmu, 0x4164),
++	    touch_rd(pmu, 0x4170), touch_rd(pmu, 0x1424));
++
++	/* SysMMU page table and translation */
++	printf("SWEET ABOX: writing firmware and the SysMMU table...\n");
++	touch_wait(11000);         /* past one 10 s log flush */
++	vm_offset_t pt = rm + ABOX_RM_PGTABLE;
++	abox_copy(pt, NULL, 0, 0x4000);
++	static const struct { uint32_t iova, off, mb; } map[] = {
++		{ 0x80000000u, ABOX_RM_DRAM, 18 }, { 0x90000000u, ABOX_RM_IVA, 1 },
++		{ 0x91000000u, ABOX_RM_RDMA, 8 }, { 0xa0000000u, ABOX_RM_VSS, 6 },
++		{ 0xa1000000u, ABOX_RM_VPARAM, 1 },
++	};
++	for (unsigned i = 0; i < sizeof(map) / sizeof(map[0]); i++) {
++		for (uint32_t m = 0; m < map[i].mb; m++) {
++			uint32_t pa = ABOX_RMEM_PA + map[i].off + (m << 20);
++			touch_wr(pt, ((map[i].iova >> 20) + m) * 4, (pa >> 4) | 2);
++		}
++	}
++	touch_wr(pt, (0x10000000u >> 20) * 4, (0x10000000u >> 4) | 2);
++	abox_copy(rm + ABOX_RM_VSS, NULL, 0, 7u << 20);           /* VSS + parameter */
++	abox_copy(rm + ABOX_RM_RDMA, NULL, 0, 8u << 20);
++
++	/* abox_enable(): sysreg, GIC, firmware, DRAM on, CPU power, pads */
++	touch_wr(mmu, 0x0, 0x7);                                 /* CTRL_BLOCK */
++	touch_wr(mmu, 0xc, (ABOX_RMEM_PA + ABOX_RM_PGTABLE) >> 12);
++	touch_wr(mmu, 0x10, 1);                                  /* flush all */
++	touch_wr(mmu, 0x0, 0x5);                                 /* CTRL_ENABLE */
++	printf("SWEET ABOX: SysMMU ctrl %#x cfg %#x pt_base %#x status %#x\n", touch_rd(mmu, 0x0),
++	    touch_rd(mmu, 0x4), touch_rd(mmu, 0xc), touch_rd(mmu, 0x8));
++
++	touch_wr(sys, 0x32c, 1);                                 /* ABOX_SYSREG_MISC_CON */
++	/* abox_gic_init_gic (GIC_IS_SECURE_FREE): GICC PRIMASK, GICD CTRL, PRI, GICC CTRL */
++	touch_wr(gic, 0x2004, 0xff);
++	touch_wr(gic, 0x1000, 0x3);
++	for (int i = 0; i < 40; i++) {
++		touch_wr(gic, 0x1400 + i * 4, 0x10101010);
++	}
++	touch_wr(gic, 0x2000, 0x3);
++
++	abox_copy(sram, fw_sram, sram_len, ABOX_SRAM_SIZE);
++	abox_copy(rm + ABOX_RM_DRAM, fw_dram, dram_len, ABOX_DRAM_FW_SIZE);
++	if (fw_iva) {
++		abox_copy(rm + ABOX_RM_IVA, fw_iva, iva_len, ABOX_IVA_FW_SIZE);
++	}
++	v = touch_rd(sram, 0);
++	printf("SWEET ABOX: firmware written (sram[0] %#x, dram[0] %#x)\n", v, touch_rd(rm + ABOX_RM_DRAM, 0));
++
++	touch_wr(sfr, 0x10, 1);                                  /* SYSPOWER_CTRL: DRAM on */
++	touch_wr(pmu, 0x415c, touch_rd(pmu, 0x415c) | 1);        /* ABOX_CPU_LOCAL_PWR_CFG */
++	printf("SWEET ABOX: starting the ABOX CPU...\n");
++	touch_wait(11000);
++	touch_wr(pmu, 0x4164, touch_rd(pmu, 0x4164) | 0x10000000);  /* ENABLE_CPU */
++	int n;
++	for (n = 0; n < 1000 && !(touch_rd(pmu, 0x4160) & 1); n++) {
++		delay(10);
++	}
++	touch_wr(pmu, 0x4170, touch_rd(pmu, 0x4170) | 0x10000000);  /* pad retention off */
++	touch_wr(pmu, 0x1424, touch_rd(pmu, 0x1424) | 1);
++	printf("SWEET ABOX: cpu_status %#x after %d polls\n", touch_rd(pmu, 0x4160), n);
++
++	/* boot done arrives as an IPC in SRAM at ipc_rx_offset 0x30300 (DT) */
++	for (int t = 0; t < 30; t++) {
++		uint32_t id = touch_rd(sram, 0x30300), type = touch_rd(sram, 0x30308), pc = 0xdead;
++		if (t < 5 || t % 5 == 4 || (id == 1 && type == 3)) {
++			(void)sweet_probe_rd32(sfr + 0x2c3c, &pc);       /* ABOX_CPU_PC */
++			printf("SWEET ABOX: t+%d00ms pc %#x syspower %#x rx ipcid %u msg %u p1 %#x p3 %#x"
++			    " mmu int %#x far %#x/%#x\n", t, pc, touch_rd(sfr, 0x14), id, type,
++			    touch_rd(sram, 0x3030c), touch_rd(sram, 0x30314), touch_rd(mmu, 0x60),
++			    touch_rd(mmu, 0x70), touch_rd(mmu, 0x80));
++		}
++		if (id == 1 && type == 3) {
++			printf("SWEET ABOX: BOOT DONE, Calliope version %#x\n", touch_rd(sram, 0x30314));
++			return;
++		}
++		delay(100000);
++	}
++	printf("SWEET ABOX: no boot done after 3 s\n");
++}
++
+ static void
+ exy_audio_probe(void)
+ {
+@@ -1174,6 +1356,9 @@ exy_audio_probe(void)
+ 	if (on == 3) {
+ 		exy_abox_probe();
+ 	}
++	if (on == 4) {
++		exy_abox_boot();
++	}
+ 	touch_wr(p0, EXY_GPP0 + 4, d0);
+ 	touch_wr(p0, EXY_GPP0, c0);
+ 	if (was_reset) {
