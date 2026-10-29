@@ -1,0 +1,92 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 198afc2..186f4b3 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -795,7 +795,9 @@ madera_wr(const struct aspi *b, uint32_t reg, uint32_t val)
+ }
+ 
+ /*
+- * Stage 2 (sweetaudio=2): a tone from the earpiece, no ABOX. MCLK1 = PMU
++ * Stage 2 (sweetaudio=2): a tone from the codec, no ABOX - now to the
++ * headphone jack (OUT2); the OUT3/RECEIVER attempt below the register list
++ * stayed silent (boot-ios19/20). MCLK1 = PMU
+  * CLKOUT0 (+0xA00: SEL [13:8] = 1 TCXO 26 MHz, bit 0 = disable; Linux
+  * ra_enable_clkout, OSC_AUD = the /sound card's xclkout). SYSCLK straight
+  * from MCLK1, declared 24.576 MHz (code 2): 26 MHz runs it 5.8 % fast, only
+@@ -820,6 +822,15 @@ madera_wr(const struct aspi *b, uint32_t reg, uint32_t val)
+ #define MADERA_R_OUT3RMIX_SRC1    0x6a8
+ #define MADERA_R_OUT3RMIX_VOL1    0x6a9
+ #define MADERA_R_HP_CTRL_3L       0x229
++#define MADERA_R_HP_CTRL_2L       0x227
++#define MADERA_R_MICD_CLAMP       0x2c6
++#define MADERA_R_OUT_PATH2L       0x418
++#define MADERA_R_DAC_VOL2L        0x419
++#define MADERA_R_DAC_VOL2R        0x41d
++#define MADERA_R_OUT2LMIX_SRC1    0x690
++#define MADERA_R_OUT2LMIX_VOL1    0x691
++#define MADERA_R_OUT2RMIX_SRC1    0x698
++#define MADERA_R_OUT2RMIX_VOL1    0x699
+ 
+ /* drivers/mfd/cs47l92-tables.c cs47l92_reva_16_patch, applied by Linux after every reset */
+ static const uint16_t cs47l92_reva_16_patch[][2] = {
+@@ -864,31 +875,33 @@ exy_audio_tone(const struct aspi *b)
+ 	madera_wr(b, MADERA_R_SAMPLE_RATE1, 0x03);              /* 48 kHz */
+ 	madera_wr(b, MADERA_R_TONE1, 0x0001);                   /* TONE1_ENA */
+ 	/*
+-	 * The receiver sits across HPOUT3L and HPOUT3R (DT routing RECEIVER <-
+-	 * HPOUT3L, HPOUT3R; OUT3 mono = differential), so both halves are
+-	 * powered, as DAPM would (boot-ios19 with OUT3L alone: silent).
++	 * Headphone jack, OUT2 stereo (HPOUT2L/R; DT routing HEADPHONE <-
++	 * HPOUT2L, HPOUT2R). boot-ios19/20 sent the tone to OUT3 (RECEIVER
++	 * route): silent - the S9's earpiece is most likely a second MAX98512
++	 * (DT sub_reg 0x3a). About -36 dBFS: mixer -12 dB, DAC -24 dB.
+ 	 */
+-	madera_wr(b, MADERA_R_OUT3LMIX_SRC1, 0x04);             /* Tone Generator 1 */
+-	madera_wr(b, MADERA_R_OUT3LMIX_VOL1, 0x34u << 1);       /* -12 dB */
+-	madera_wr(b, MADERA_R_OUT3RMIX_SRC1, 0x04);
+-	madera_wr(b, MADERA_R_OUT3RMIX_VOL1, 0x34u << 1);
+-	madera_wr(b, MADERA_R_DAC_VOL3L, 0x68);                 /* unmuted, -12 dB */
+-	madera_wr(b, MADERA_R_DAC_VOL3R, 0x0200 | 0x68);        /* VU latches both */
+-	madera_wr(b, MADERA_R_OUT_PATH3L, madera_rd(b, MADERA_R_OUT_PATH3L) | 0x1000);  /* OUT3_MONO */
+-	uint32_t en = madera_rd(b, MADERA_R_OUT_ENABLES1) & ~0x8000u;  /* EP_SEL 0: HPOUT3 */
+-	madera_wr(b, MADERA_R_OUT_ENABLES1, en | 0x0030);       /* OUT3L_ENA | OUT3R_ENA */
++	madera_wr(b, MADERA_R_OUT2LMIX_SRC1, 0x04);             /* Tone Generator 1 */
++	madera_wr(b, MADERA_R_OUT2LMIX_VOL1, 0x34u << 1);       /* -12 dB */
++	madera_wr(b, MADERA_R_OUT2RMIX_SRC1, 0x04);
++	madera_wr(b, MADERA_R_OUT2RMIX_VOL1, 0x34u << 1);
++	madera_wr(b, MADERA_R_DAC_VOL2L, 0x50);                 /* unmuted, -24 dB */
++	madera_wr(b, MADERA_R_DAC_VOL2R, 0x0200 | 0x50);        /* VU latches both */
++	madera_wr(b, MADERA_R_OUT_PATH2L, madera_rd(b, MADERA_R_OUT_PATH2L) & ~0x1000u);  /* stereo */
++	uint32_t en = madera_rd(b, MADERA_R_OUT_ENABLES1);
++	madera_wr(b, MADERA_R_OUT_ENABLES1, en | 0x000c);       /* OUT2L_ENA | OUT2R_ENA */
+ 	delay(40000);
+-	printf("SWEET AUDIO: tone on: SYSCLK1 %#x RATE1 %#x TONE1 %#x MIX %#x/%#x %#x/%#x DAC3 %#x/%#x PATH3L %#x OUTEN %#x HPCTRL3L %#x\n",
++	printf("SWEET AUDIO: tone on: SYSCLK1 %#x RATE1 %#x TONE1 %#x MIX %#x/%#x %#x/%#x DAC2 %#x/%#x PATH2L %#x OUTEN %#x HPCTRL2L %#x CLAMP %#x\n",
+ 	    madera_rd(b, MADERA_R_SYSCLK1), madera_rd(b, MADERA_R_SAMPLE_RATE1), madera_rd(b, MADERA_R_TONE1),
+-	    madera_rd(b, MADERA_R_OUT3LMIX_SRC1), madera_rd(b, MADERA_R_OUT3LMIX_VOL1),
+-	    madera_rd(b, MADERA_R_OUT3RMIX_SRC1), madera_rd(b, MADERA_R_OUT3RMIX_VOL1),
+-	    madera_rd(b, MADERA_R_DAC_VOL3L), madera_rd(b, MADERA_R_DAC_VOL3R), madera_rd(b, MADERA_R_OUT_PATH3L),
+-	    madera_rd(b, MADERA_R_OUT_ENABLES1), madera_rd(b, MADERA_R_HP_CTRL_3L));
++	    madera_rd(b, MADERA_R_OUT2LMIX_SRC1), madera_rd(b, MADERA_R_OUT2LMIX_VOL1),
++	    madera_rd(b, MADERA_R_OUT2RMIX_SRC1), madera_rd(b, MADERA_R_OUT2RMIX_VOL1),
++	    madera_rd(b, MADERA_R_DAC_VOL2L), madera_rd(b, MADERA_R_DAC_VOL2R), madera_rd(b, MADERA_R_OUT_PATH2L),
++	    madera_rd(b, MADERA_R_OUT_ENABLES1), madera_rd(b, MADERA_R_HP_CTRL_2L),
++	    madera_rd(b, MADERA_R_MICD_CLAMP));
+ 	printf("SWEET AUDIO: IRQ1 raw status 1-6: %#x %#x %#x %#x %#x %#x\n",
+ 	    madera_rd(b, MADERA_R_IRQ1_RAW1), madera_rd(b, MADERA_R_IRQ1_RAW1 + 1), madera_rd(b, MADERA_R_IRQ1_RAW1 + 2),
+ 	    madera_rd(b, MADERA_R_IRQ1_RAW1 + 3), madera_rd(b, MADERA_R_IRQ1_RAW1 + 4), madera_rd(b, MADERA_R_IRQ1_RAW1 + 5));
+ 	touch_wait(secs * 1000u);
+-	madera_wr(b, MADERA_R_OUT_ENABLES1, madera_rd(b, MADERA_R_OUT_ENABLES1) & ~0x0030u);
++	madera_wr(b, MADERA_R_OUT_ENABLES1, madera_rd(b, MADERA_R_OUT_ENABLES1) & ~0x000cu);
+ 	delay(10000);
+ 	madera_wr(b, MADERA_R_TONE1, 0);
+ 	madera_wr(b, MADERA_R_SYSCLK1, 2u << 8);                /* SYSCLK off */
+@@ -935,6 +948,8 @@ exy_audio_probe(void)
+ 	unsigned idle_scl = apin_get(&scl), idle_sda = apin_get(&sda);
+ 	int rev = ai2c_read16(&sda, &scl, MAX98512_ADDR, 0x0402);
+ 	int revb = ai2c_read16(&sda, &scl, MAX98512_ADDR, 0x0600);
++	int rev2 = ai2c_read16(&sda, &scl, 0x3a, 0x0402);       /* DT sub_reg: the earpiece amp? */
++	printf("SWEET AUDIO: second amp at 0x3a: rev 0x0402=%d\n", rev2);
+ 	touch_wr(p1, EXY_GPP4 + 4, d4);
+ 	touch_wr(p1, EXY_GPP4 + 8, u4);
+ 	touch_wr(p1, EXY_GPP4, c4);
