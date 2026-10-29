@@ -1087,3 +1087,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 - **Patch 0124 (written, not built):** sleh.c handle_kernel_abort sends a FSC_SYNC_EXT_ABORT at `sweet_probe_ld` to `sweet_probe_fail` (bus-error-safe MMIO read `sweet_probe_rd32`, sweet_touch.c). sweetaudio=3 now scans QCH/sysreg(0,0x104,0x204,0x300,0x328,0x32c)/SysMMU logging ABORT instead of panicking, then GPIO_AUD/SRAM, then tries (A) DTZPC save+restore, (B) ABOX CPU off + DTZPC save + AUD PD off/on (PMU 0x4000/0x4004) + restore, (C) smc 0x82000701 (abox.c MANUAL_SECURITY_CHANGE), rescanning after each; stops at the first that opens the sysreg.
 - **0124 compiled** (run 40958223112, success): `out/exynos/xnu21/kernel.development.sweet` sha256 4dabb8a6... **Boot image `out/exynos/boot-ios25.img`** (sha256 3f8c5d6c...) = boot-ios24 cmdline (sweetaudio=3) with the 0124 kernel (safe ABOX probe + A/B/C). Not flashed. Fallback: boot-ios15.
 
+- **boot-ios25 flashed** to BOOT (sda10), readback sha256 3f8c5d6c... matches. Rebooted. Fallback boot-ios15.
+
