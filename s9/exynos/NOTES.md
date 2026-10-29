@@ -1030,3 +1030,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 - **Patch 0119 (written):** suspect = the receiver is across HPOUT3L and HPOUT3R (DT routing lists both; OUT3 mono is differential) and only OUT3L was on. Now: Linux's cs47l92_reva_16_patch (38 writes, revision 0x1 = rev A) after boot done, tone into OUT3L and OUT3R mixers (0x6A0/0x6A8), DAC 3L/3R unmuted -12 dB (VU on the R write), OUT3L_ENA | OUT3R_ENA; logs HP_CTRL_3L (0x229) and IRQ1 raw status 1-6 (0x1880-0x1885); 5 s.
 - **0119 compiled** (run 40910290875, success): `out/exynos/xnu16/kernel.development.sweet` sha256 8ef32dd6... **Boot image `out/exynos/boot-ios20.img`** (sha256 739a4ef6...) = boot-ios19 cmdline (sweetaudio=2) with the 0119 kernel. Not flashed.
 
+- boot-ios20 (tone on both OUT3 halves + rev A patch) flashed 2026-10-29 with verified readback, rebooted. Result pending.
+
