@@ -855,3 +855,5 @@ Implements exynos/M3-POWER.md section 6 A+B in x1.c: before the first /cpus reg 
 
 Blocker found while planning 0112 (observation from the build files): the SWEET kernel is built with `-march=armv8.2-a+crypto` (makedefs/MakeInc.def) and `__ARM_PAN_AVAILABLE__` (pexpert/arm64/SWEET.h), and there is no undefined-instruction emulation. TWRP's Linux hwcaps (system-wide) lack atomics, i.e. at least one core (the M3) has no LSE; v8.0 also means no PAN. If so, the kernel's LSE atomics / `msr PAN` would UNDEF on an M3, and A11-targeted iOS userland may use LSE too. Also found: start.s matches per-CPU data by `MPIDR & 0xFFFF` - M3 core 0 (0x80000100) collides with A55 core 1 (0x81000100); planned fix: key non-MT cores as 0x8100-0x8103.
 X1.7 = X1.6 + ISAR0/ISAR1 on every core; final screen shows for CPU0 (A55) and CPU4 (M3): raw ISAR0/ISAR1/MMFR1/PFR0 and decoded LSE (ISAR0[23:20], 2 = LSE), PAN (MMFR1[23:20]), RCPC (ISAR1[23:20]), FP (PFR0[19:16], 1 = fp16). PMU/status block cut to one line each. `out/exynos/boot-x1.img` sha256 b56da2e6...
+- X1.7 flashed 2026-10-29 with verified readback, rebooted. Result pending (photo). Afterwards restore boot-ios10b.
+
