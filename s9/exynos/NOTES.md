@@ -1056,3 +1056,7 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 
 - boot-ios22 (ABOX probe) flashed 2026-10-29 with verified readback, rebooted. Result pending.
 
+- **ABOX probe RESULT (boot-ios22, log s9/logs/boot-ios22.txt, observed):** `PMU magic 0x3100 cpu_config 0x1 cpu_status 0x20000 cpu_option 0` (ABOX CPU locally powered but not enabled/running; magic != 0xAB0CAB0C); `SFR ip_index 0x41424f58 ("ABOX") version 0x1010100 syspower ctrl 0 status 0` (ABOX SFR clocked and readable from the AP); then `reading sysreg 0x17c10000...` and the system FROZE (log ends after flush #2 with backboardd lines from the 11 s wait). SysMMU not reached.
+  - Cause (strong guess): the ABOX sysreg block is TrustZone-protected: DT pd-aud has `need_smc = <0x17c10204>` (inside 0x17C10000), i.e. Samsung's kernel accesses it through the secure monitor (exynos_smc register read/write), not directly. Never read 0x17C10000 directly again.
+  - boot-ios22 freezes during boot: do not leave it on BOOT; fall back to boot-ios15/21.
+  - Next: SysMMU (0x17E00000) read on its own; ABOX sysreg via SMC (find Samsung's SMC_CMD_REG / SMC_REG_ID_SFR_R/W ids in include/soc/samsung/exynos-smc.h of the S9 kernel).
