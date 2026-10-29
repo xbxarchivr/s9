@@ -755,5 +755,5 @@ Why boots are slow: after link startup the link stays in **PWM-G1** (a few Mbit/
 ## iOS 16 LOCK SCREEN ON THE GALAXY S9 EXYNOS (boot-ios4, 2026-10-29 ~03:00)
 
 **MILESTONE: SpringBoard reached the lock screen** (reported by the user; no photo yet because the kernel console is drawn over it). The D22AP /product node + new ECID fixed the BoundingPathBitmap assertion. Known gaps: **no touch** (sweettouch=0; sweet_touch.c is the sweet's Goodix GT9896 on Qualcomm GENI I2C and returns early on Exynos - the S9 needs its own driver for its touch controller on Exynos I2C), console text over the GUI (sweetfb_noconsole=1 pauses it at the first swap, as on the sweet). Keys reach backboardd (power/volume/Bixby).
-- **boot-ios5** (`out/exynos/boot-ios5.img`, sha256 125deb8f...): boot-ios4 + `sweetfb_noconsole=1` for a clean photo. Not flashed.
+- **boot-ios5** (`out/exynos/boot-ios5.img`, sha256 125deb8f...): boot-ios4 + `sweetfb_noconsole=1` for a clean photo. Flashed 2026-10-29 03:01 with verified readback.
 - Next: photo; then the S9 touch driver (identify the controller and its I2C bus/GPIOs from the stock rev26 DT in backup/exynos-boot-stock.img; LineageOS universal9810 drivers/input/touchscreen); battery/USB later.
