@@ -1128,3 +1128,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 - **Patch 0129 (written, not built):** on 0xFA, abox_fault_dump logs param1-3, the bundle words, the CA7 R0-R14+PC dump at bundle.param_s32[0] (SRAM 0x30318; address < 0x80000000 = SRAM, 0x80000000.. = DRAM firmware window) and the live SFR registers ABOX_CPU_R 0x2C00-0x2C3C and L2C_STATUS 0x2C40.
 - **0129 compiled** (run 40970813626, success): `out/exynos/xnu26/kernel.development.sweet` sha256 f123302a... **Boot image `out/exynos/boot-ios30.img`** (sha256 5bc33fa3...) = boot-ios29 cmdline (sweetaudio=4, Calliope blobs) with the 0129 kernel. Not flashed. Fallback: boot-ios29 (boots iOS) / boot-ios25 / boot-ios15.
 
+- **boot-ios30 flashed** to BOOT (sda10), readback sha256 5bc33fa3... matches. Rebooted. Fallback boot-ios29 / boot-ios25.
+
