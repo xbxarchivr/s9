@@ -948,3 +948,5 @@ Tools: SystemOS cryptex `F:\ios-s9-ipsw\20H392\087-86593-047.dmg` mounted read-o
 
 - **0112 compiled** (run 40885884684, success): `out/exynos/xnu9/kernel.development.sweet` sha256 ae9c245a... **Boot image `out/exynos/boot-ios13.img`** (sha256 b1d46993...) = boot-ios12 (@2x ADT, 30 Hz, 1794 MHz) with the 0112 kernel and WITHOUT sweetbattery=0 (MAX77705 gauge). Not flashed. Expect: 'SWEET MAX77705: Exynos CMGP gpm14/gpm15 CON 0x2/0x2 ...', 'lines sda=1 scl=1', 'SWEET BATTERY: MAX77705 fuel gauge answers'. Compare % with TWRP's /sys/class/power_supply/battery/capacity.
 
+- boot-ios13 flashed 2026-10-29 with verified readback, rebooted into iOS. TWRP reference just before: capacity 50 %, voltage_now 3787000 uV, current_now -167, status Charging (Fast), temp 34.8 C.
+
