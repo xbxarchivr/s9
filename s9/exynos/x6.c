@@ -206,6 +206,120 @@ static int hsi2c_msg(uint8_t addr, int rd, uint8_t *buf, unsigned len)
 }
 
 /*
+ * X6.5: read-only access to the S2MPS18 PMIC over SPEEDY (0x141C0000) through
+ * its IP batcher, which takes the hardware semaphore shared with the APM
+ * firmware, so these reads never collide with the APM's own PMIC traffic
+ * (i2c-speedy.c exynos_speedy_xfer_batcher, read direction, single access).
+ * The batcher runs a table: opcode byte = SPEEDY register offset, payload =
+ * value; the RX_DATA entry's payload slot receives the byte read.
+ * Addresses are 12 bit; assumed (page << 8) | reg with the PMIC page 0x01.
+ */
+#define SPEEDY			0x141C0000UL
+#define SP_CTRL			0x000
+#define SP_FIFO_CTRL		0x004
+#define SP_CMD			0x008
+#define SP_INT_ENABLE		0x00C
+#define SP_INT_STATUS		0x010
+#define SP_RX_DATA		0x038
+#define IPB_CON			0x500
+#define IPB_STATE		0x504
+#define IPB_INT_EN		0x508
+#define IPB_FSM_UNEXPEN		0x50C
+#define IPB_FSM_TXEN		0x510
+#define IPB_FSM_RXFIFO		0x514
+#define IPB_FSM_CON		0x518
+#define IP_INT_STATUS		0x520
+#define IPB_OPCODE		0x600
+#define IPB_PAYLOAD		0x1000
+#define IPB_ENABLE_APB		(1u << 0 | 1u << 1)	/* BATCHER_ENABLE | DEDICATED_BATCHER_APB */
+#define IPB_START		(1u << 4)
+#define IPB_SW_RESET		(1u << 31)
+#define IPB_DONE		(1u << 0)
+#define IPB_UNEXPECTED		(1u << 1)
+#define SP_ERRS			(0xeu | 0x7u << 16 | 0x3u << 20)	/* timeouts, rx/tx errors */
+
+static uint32_t sp_cmdbuf, sp_cmdidx, sp_cmdptr, sp_desc;
+
+static void sp_batch(uint32_t payload, uint32_t opcode)
+{
+	sp_cmdbuf &= ~(0xffu << (8 * sp_cmdidx));
+	sp_cmdbuf |= opcode << (8 * sp_cmdidx);
+	wr32(SPEEDY + IPB_OPCODE + 4 * sp_cmdptr, sp_cmdbuf);
+	wr32(SPEEDY + IPB_PAYLOAD + 4 * sp_desc, payload);
+	sp_cmdidx++;
+	sp_desc++;
+	if (sp_cmdidx == 4) {
+		sp_cmdidx = 0;
+		sp_cmdptr++;
+		sp_cmdbuf = 0xffffffffu;
+	}
+}
+
+/* exynos_speedy_probe: batcher reset + which IP bits it monitors */
+static void sp_init(void)
+{
+	wr32(SPEEDY + IPB_CON, rd32(SPEEDY + IPB_CON) | IPB_SW_RESET);
+	wr32(SPEEDY + IPB_CON, rd32(SPEEDY + IPB_CON) & ~IPB_SW_RESET);
+	wr32(SPEEDY + IPB_FSM_UNEXPEN, SP_ERRS);
+	wr32(SPEEDY + IPB_FSM_TXEN, 1u << 0 | 1u << 4);	/* TRANSFER_DONE, TX_ALMOST_EMPTY */
+	wr32(SPEEDY + IPB_FSM_RXFIFO, 1u << 6);		/* FIFO_EMPTY */
+	wr32(SPEEDY + IPB_FSM_CON, 1u << 0);		/* DISABLE_STOP_CMD */
+}
+
+static uint32_t sp_last_state, sp_last_int;
+
+/* one byte from 12-bit SPEEDY address a; -1 on timeout, -2 on error */
+static int sp_read(uint32_t a)
+{
+	sp_cmdbuf = 0xffffffffu;
+	sp_cmdidx = sp_cmdptr = sp_desc = 0;
+	wr32(SPEEDY + IPB_CON, 0);				/* idle */
+	wr32(SPEEDY + IPB_CON, IPB_ENABLE_APB);		/* idle -> init */
+	sp_batch(0x30051, SP_CTRL);				/* SPEEDY enable */
+	sp_batch(1u << 31 | 1u << 8 | 1u, SP_FIFO_CTRL);	/* FIFO reset, TX/RX trigger 1 */
+	sp_batch(0xffffffffu, SP_INT_STATUS);
+	sp_batch(0xeu | 1u << 8 | 1u << 9 | 0x7u << 16, SP_INT_ENABLE);
+	sp_batch((a & 0xfff) << 7 | 1u << 19, SP_CMD);	/* random access, read */
+	uint32_t rx_slot = sp_desc;
+	sp_batch(0x77, SP_RX_DATA);
+	sp_batch(0, 0xff);					/* end of table */
+	wr32(SPEEDY + IPB_INT_EN, 1);
+	wr32(SPEEDY + IPB_CON, rd32(SPEEDY + IPB_CON) | IPB_START);
+	int r = -1;
+	uint64_t end = xp_now() + xp.cntfrq / 2;		/* 500 ms */
+	while (xp_now() < end) {
+		sp_last_state = rd32(SPEEDY + IPB_STATE);
+		sp_last_int = rd32(SPEEDY + IP_INT_STATUS);
+		if (sp_last_state & IPB_DONE) {
+			r = (sp_last_int & SP_ERRS) ? -2 : 0;
+			break;
+		}
+		if ((sp_last_state & IPB_UNEXPECTED) && (sp_last_int & SP_ERRS)) {
+			r = -2;
+			break;
+		}
+	}
+	if (sp_last_state & IPB_DONE)
+		wr32(SPEEDY + IPB_STATE, sp_last_state | IPB_DONE);
+	wr32(SPEEDY + IPB_INT_EN, 0);
+	int v = r ? r : (int)(rd32(SPEEDY + IPB_PAYLOAD + 4 * rx_slot) & 0xff);
+	wr32(SPEEDY + IPB_CON, 0);
+	return v;
+}
+
+static char *put_sp(char *p, const char *name, uint32_t a)
+{
+	int v = sp_read(a);
+	p = put(put(p, name), " ");
+	if (v < 0) {
+		p = put(p, v == -1 ? "timeout st " : "error st ");
+		p = put_hex(p, sp_last_state, 8);
+		return put(put_hex(put(p, " is "), sp_last_int, 8), "  ");
+	}
+	return put(put_hex(p, (uint32_t)v, 2), "  ");
+}
+
+/*
  * X6.4: bit-banged I2C on GPP1-4 (SCL) / GPP1-5 (SDA), open drain: a line is
  * driven low as an output with DAT 0, released as an input (the bus has its
  * own pull-ups on tsp_io). ~50 kHz. Proves the chip and the wiring without
@@ -359,7 +473,7 @@ void shim_main(uint64_t dtb)
 	if (!xp.fb_ok)
 		xp_reset();
 	con_clear(GREY);
-	con_title("EXYNOS X6.4 RUNS");
+	con_title("EXYNOS X6.5 RUNS");
 	con_str("MODEL", xp.model[0] ? xp.model : "(no DTB)");
 
 	/* what S-Boot left: pins, IRQ level, and the HSI2C block itself */
@@ -374,6 +488,19 @@ void shim_main(uint64_t dtb)
 	p = put_hex(put(p, " fifo "), hr(FIFO_STATUS), 8);
 	put_hex(put(p, " trans "), hr(TRANS_STATUS), 8);
 	con_str("HSI2C", b);
+
+	/* X6.5: PMIC over SPEEDY, reads only: ID, LDO1 (expected on), LDO35, LDO43 */
+	p = put_hex(put(b, "ctrl "), rd32(SPEEDY + SP_CTRL), 8);
+	p = put_hex(put(p, " ipb con "), rd32(SPEEDY + IPB_CON), 8);
+	put_hex(put(p, " state "), rd32(SPEEDY + IPB_STATE), 8);
+	con_str("SPEEDY", b);
+	sp_init();
+	p = put_sp(b, "id", 0x100);
+	put_sp(p, "l1ctrl", 0x149);
+	con_str("PMIC", b);
+	p = put_sp(b, "l35ctrl", 0x16c);
+	put_sp(p, "l43ctrl", 0x174);
+	con_str("", b);
 
 	/* X6.1: select I2C on USI port 3, then the pins */
 	uint32_t usi_before = rd32(SYSREG_USI03);
