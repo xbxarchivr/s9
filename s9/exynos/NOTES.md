@@ -864,3 +864,19 @@ X1.7 = X1.6 + ISAR0/ISAR1 on every core; final screen shows for CPU0 (A55) and C
   - Options: (A) kernel rebuilt for armv8-a without PAN (or PAN toggled at runtime only on A55s) and M3s used only for bound kernel work, e.g. the sweet.fb.present copy/scale (6-13 ms per frame); (B) trap-and-emulate LSE/fp16 on the M3s (slow, large); (C) leave the M3s off. A is the only one with a clear payoff.
 - boot-ios10b restored on BOOT 2026-10-29 after X1.7 (verified readback), rebooted into iOS.
 
+
+## Plan: M3s as kernel-only cores (researched 2026-10-29, NOT started)
+
+Feasibility (read from the xnuw sources, observed):
+- **Scheduler:** a processor with is_recommended = FALSE runs only threads bound to it (sched_prim.c ~2557 "Bound threads are dispatched to a processor without going through choose_processor()"; choose_processor drops non-recommended hints ~5124). sweet_bind_current_thread(cpu) (sched_prim.c 183) already binds (used by the vsync thread, "vsync thread on cpu 3").
+- **Instruction set:** v8.2/PAN use is all compile-time and has v8.0 fallbacks: PAN in 11 files behind __ARM_PAN_AVAILABLE__ (pexpert/arm64/SWEET.h:36); __ARM_ARCH_8_2__ only gates UAO save/restore (cswitch.s), the ticket-lock casa (machine_routines_asm.s ~759, LL/SC fallback) and OS_ATOMIC_USE_LLSC (libkern/os/atomic_private.h:182); no fp16, no dc cvap. KDK arm64e libs are only inspected by CI, not linked.
+- **Identity:** start.s matches cpu data by MPIDR & 0xFFFF; M3 core 0 (0x80000100) collides with A55 core 1 (0x81000100).
+
+Steps:
+1. Kernel for both cores: MACHINE_FLAGS_ARM64_SWEET -march=armv8.2-a+crypto -> armv8-a+crypto+crc; drop __ARM_PAN_AVAILABLE__ from SWEET.h. Cost: no PAN, LL/SC atomics; it is one kernel for SDM845 and Exynos, so the SDM845 build changes too (or add a separate SWEET_EXYNOS machine config + CI job).
+2. Identity: SWEET start.s key = MPIDR & 0xFFFF, plus 0x8000 when MPIDR.MT (bit 24) is clear; same fold in ml_get_cpu_number; ADT reg for M3s = 0x8100-0x8103; SweetCPU::start range check allows 0x81nn on Exynos.
+3. Power: the six pmucal_lpm_init writes (X1.6) in SweetCPU before the first M3 CPU_ON; psci-id 0x100-0x103 in the ADT (mkadt.py), cpus=8.
+4. Keep users off: M3s must be non-recommended BEFORE processor_start (else the scheduler may dispatch an A11-built user thread there -> SIGILL); needs a SWEET hook into sched_update_recommended_cores / perfcontrol recommended mask, and a check that the perfcontrol failsafe never re-recommends them.
+5. Work to move: bind sweet.fb.present (and optionally the touch thread, bit-banged I2C) to cpu 4+.
+
+**Expected gain is small** (computed from boot-ios10b.txt): the present copy is busy 5.6-8.9% of ONE A55 (7.5-13 ms x 300 frames per 30-55 s), i.e. ~2% of the 4-core budget. The slowness is CoreAnimation software rendering in backboardd/SpringBoard (user space), which cannot run on the M3s. So steps 1-5 buy little for their risk. Higher-value alternatives: zero-copy present on DECON (point the window at the IOSurface; removes the copy instead of moving it, also frees memory bandwidth), lower render resolution (@2x ADT, --scale2: 46% fewer pixels for CoreAnimation), or a GPU driver (Mali-G72, long-term).
