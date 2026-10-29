@@ -1079,3 +1079,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 - **Patch 0123 (written):** after the DTZPC restore, read the four Q-channels (flushed line first), then set CLOCK_REQ=1/ENABLE=0 on SYSREG_AUD and SYSMMU_AUD (manual clock on), log, then the flushed sysreg and SysMMU reads.
 - **0123 compiled** (run 40922996377, success): `out/exynos/xnu20/kernel.development.sweet` sha256 fe647c60... **Boot image `out/exynos/boot-ios24.img`** (sha256 c3af3ae2...) = boot-ios23 cmdline (sweetaudio=3) with the 0123 kernel (Q-channel clock request before the sysreg read). Not flashed. Fallback: boot-ios15.
 
+- **boot-ios24 flashed** to BOOT (sda10), readback sha256 c3af3ae2... matches. Rebooted. Fallback boot-ios15.
+
