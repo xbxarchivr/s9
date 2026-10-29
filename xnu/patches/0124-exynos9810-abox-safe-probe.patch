@@ -1,0 +1,227 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index a2700d6..c08c72f 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -133,6 +133,29 @@ touch_wr(vm_offset_t base, uint32_t off, uint32_t val)
+ 	__asm__ volatile("dsb osh" ::: "memory");
+ }
+ 
++/*
++ * MMIO read that survives a bus error: osfmk/arm64/sleh.c sends a
++ * synchronous external abort taken at sweet_probe_ld to sweet_probe_fail.
++ * Returns 0 and the value, or 1 when the slave refused the read.
++ */
++int sweet_probe_rd32(vm_offset_t va, uint32_t *out);
++__asm__(
++	"	.text\n"
++	"	.p2align 2\n"
++	"	.globl _sweet_probe_rd32\n"
++	"_sweet_probe_rd32:\n"
++	"	.globl _sweet_probe_ld\n"
++	"_sweet_probe_ld:\n"
++	"	ldr	w2, [x0]\n"
++	"	dmb	oshld\n"
++	"	str	w2, [x1]\n"
++	"	mov	x0, #0\n"
++	"	ret\n"
++	"	.globl _sweet_probe_fail\n"
++	"_sweet_probe_fail:\n"
++	"	mov	x0, #1\n"
++	"	ret\n");
++
+ static void
+ touch_wait(unsigned ms)
+ {
+@@ -934,6 +957,35 @@ exy_smc(uint64_t fn, uint64_t a1, uint64_t a2, uint64_t a3)
+ 	return (int64_t)x0;
+ }
+ 
++static bool
++abox_peek(const char *name, vm_offset_t va, uint32_t pa)
++{
++	uint32_t v = 0;
++	if (sweet_probe_rd32(va, &v)) {
++		printf("SWEET ABOX:   %-12s %#x ABORT\n", name, pa);
++		return false;
++	}
++	printf("SWEET ABOX:   %-12s %#x = %#x\n", name, pa, v);
++	return true;
++}
++
++/* true when the sysreg answers (MISC_CON, the register abox.c writes) */
++static bool
++abox_scan(const char *when, vm_offset_t cmu, vm_offset_t sys, vm_offset_t mmu)
++{
++	printf("SWEET ABOX: scan %s\n", when);
++	abox_peek("qch_sysreg", cmu + 0x3064, 0x17c03064);
++	abox_peek("qch_sysmmu", cmu + 0x3060, 0x17c03060);
++	abox_peek("sysreg+0", sys, 0x17c10000);
++	abox_peek("sysreg+0x104", sys + 0x104, 0x17c10104);
++	abox_peek("sysreg+0x204", sys + 0x204, 0x17c10204);
++	abox_peek("sysreg+0x300", sys + 0x300, 0x17c10300);
++	abox_peek("sysreg+0x328", sys + 0x328, 0x17c10328);
++	bool open = abox_peek("sysreg+0x32c", sys + 0x32c, 0x17c1032c);
++	abox_peek("sysmmu+0", mmu, 0x17e00000);
++	return open;
++}
++
+ static void
+ exy_abox_probe(void)
+ {
+@@ -951,47 +1003,87 @@ exy_abox_probe(void)
+ 	printf("SWEET ABOX: SFR ip_index %#x version %#x syspower ctrl %#x status %#x\n",
+ 	    touch_rd(sfr, 0x0), touch_rd(sfr, 0x4), touch_rd(sfr, 0x10), touch_rd(sfr, 0x14));
+ 	/*
+-	 * boot-ios22 panicked reading the sysreg directly: the block is
+-	 * TrustZone-protected until the domain's DTZPC is restored. Linux does
+-	 * that after every AUD power-on (pmucal_local.c -> exynos_pd_tz_restore,
++	 * boot-ios22 panicked reading the sysreg directly. Linux restores the
++	 * domain's DTZPC after every AUD power-on and saves it before every
++	 * power-off (pmucal_local.c -> exynos_pd_tz_restore/save,
+ 	 * exynos-el3_mon.c): SMC_CMD_PREAPRE_PD_ONOFF 0x82000410, x1 =
+-	 * EXYNOS_WAKEUP_PD_DOWN (1), x2 = DT pd-aud need_smc 0x17c10204.
++	 * EXYNOS_WAKEUP_PD_DOWN (1) or EXYNOS_GET_IN_PD_DOWN (0), x2 = DT
++	 * pd-aud need_smc 0x17c10204.
+ 	 */
+-	printf("SWEET ABOX: issuing DTZPC restore smc...\n");
+-	touch_wait(11000);         /* past one 10 s log flush, as for the reads */
+-	int64_t tz = exy_smc(0x82000410, 1, 0x17c10204, 0);
+-	printf("SWEET ABOX: DTZPC restore smc(0x82000410, 1, 0x17c10204) = %lld\n", tz);
+ 	/*
+-	 * boot-ios23: the restore returned 0 and the sysreg read still aborted.
+-	 * Its clock goes through a Q-channel in CMU_AUD (0x17C00000,
+-	 * exynos9810/cmucal-sfr.c): QCH_CON_SYSREG_AUD_QCH 0x3064, SYSMMU_AUD
+-	 * 0x3060, ABOX ACLK 0x3024, GPIO_AUD 0x304C; bit 0 ENABLE (hardware
+-	 * gating), bit 1 CLOCK_REQ (manual request), bit 2 IGNORE_FORCE_PM_EN,
+-	 * [25:16] EXPIRE_VAL. With gating on and no request the clock may be off
+-	 * when the AP reads: for the sysreg and the SysMMU, request it
+-	 * manually (CLOCK_REQ 1, ENABLE 0) before their reads.
++	 * boot-ios23/24: the DTZPC restore smc returned 0, the Q-channels read
++	 * 0x3f0002 (clock requested, no gating), and the sysreg read still
++	 * took a synchronous external abort (esr 0x96000010). Android reads
++	 * the same sysreg (0x104, 0x300: pmucal aud_save) before its first
++	 * DTZPC save, so on Android it answers with AUD as S-Boot left it.
++	 * The reads below go through sweet_probe_rd32 and log ABORT instead
++	 * of panicking, so one boot maps what refuses the AP and tries, in
++	 * order: (A) DTZPC save + restore, (B) an AUD power cycle the way
++	 * exynos-pd/pmucal_local do it, (C) smc 0x82000701 (abox.c
++	 * MANUAL_SECURITY_CHANGE, "ABOX_CA7 security changed").
+ 	 */
+ 	vm_offset_t cmu = ml_io_map(0x17c00000, 0x4000);
+-	if (!cmu) {
++	vm_offset_t gpio = ml_io_map(0x17c60000, PAGE_SIZE), sram = ml_io_map(0x17d00000, PAGE_SIZE);
++	if (!cmu || !gpio || !sram) {
+ 		return;
+ 	}
+-	printf("SWEET ABOX: reading CMU_AUD Q-channels...\n");
+-	touch_wait(11000);
+-	uint32_t q_sys = touch_rd(cmu, 0x3064), q_mmu = touch_rd(cmu, 0x3060);
+-	printf("SWEET ABOX: QCH sysreg %#x sysmmu %#x abox_aclk %#x gpio %#x\n",
+-	    q_sys, q_mmu, touch_rd(cmu, 0x3024), touch_rd(cmu, 0x304c));
+-	touch_wr(cmu, 0x3064, (q_sys & ~1u) | 2u);
+-	touch_wr(cmu, 0x3060, (q_mmu & ~1u) | 2u);
+-	delay(100);
+-	printf("SWEET ABOX: QCH now sysreg %#x sysmmu %#x (CLOCK_REQ on, gating off)\n",
+-	    touch_rd(cmu, 0x3064), touch_rd(cmu, 0x3060));
+-	printf("SWEET ABOX: reading sysreg 0x17c10000...\n");
+-	touch_wait(11000);         /* past one 10 s log flush: a hang leaves this line on UFS */
+-	printf("SWEET ABOX: sysreg misc_con %#x l2_cache_con %#x\n", touch_rd(sys, 0x32c), touch_rd(sys, 0x328));
+-	printf("SWEET ABOX: reading SysMMU 0x17e00000...\n");
++	if (abox_scan("as booted", cmu, sys, mmu)) {
++		goto open;
++	}
++	printf("SWEET ABOX: gpio_aud 0x17c60000...\n");
+ 	touch_wait(11000);         /* past one 10 s log flush: a hang leaves this line on UFS */
+-	printf("SWEET ABOX: SysMMU ctrl %#x cfg %#x status %#x version %#x\n",
+-	    touch_rd(mmu, 0x0), touch_rd(mmu, 0x4), touch_rd(mmu, 0x8), touch_rd(mmu, 0x34));
++	abox_peek("gpio_aud", gpio, 0x17c60000);
++	printf("SWEET ABOX: abox sram 0x17d00000...\n");
++	touch_wait(11000);
++	abox_peek("sram", sram, 0x17d00000);
++
++	printf("SWEET ABOX: (A) DTZPC save + restore smc...\n");
++	touch_wait(11000);
++	int64_t s = exy_smc(0x82000410, 0, 0x17c10204, 0);
++	int64_t r = exy_smc(0x82000410, 1, 0x17c10204, 0);
++	printf("SWEET ABOX: (A) save = %lld, restore = %lld\n", s, r);
++	if (abox_scan("after A", cmu, sys, mmu)) {
++		goto open;
++	}
++
++	/* pmucal aud_off/aud_on: AUD_CONFIGURATION 0x4000 [3:0], AUD_STATUS 0x4004 */
++	printf("SWEET ABOX: (B) ABOX CPU off, DTZPC save, AUD off...\n");
++	touch_wait(11000);
++	touch_wr(pmu, 0x415c, touch_rd(pmu, 0x415c) & ~1u);
++	s = exy_smc(0x82000410, 0, 0x17c10204, 0);
++	touch_wr(pmu, 0x4000, touch_rd(pmu, 0x4000) & ~0xfu);
++	int n;
++	for (n = 0; n < 10000 && (touch_rd(pmu, 0x4004) & 0xf); n++) {
++		delay(10);
++	}
++	printf("SWEET ABOX: (B) save = %lld, AUD status %#x after %d polls; AUD on...\n",
++	    s, touch_rd(pmu, 0x4004), n);
++	touch_wait(11000);
++	touch_wr(pmu, 0x4000, touch_rd(pmu, 0x4000) | 0xfu);
++	for (n = 0; n < 10000 && (touch_rd(pmu, 0x4004) & 0xf) != 0xf; n++) {
++		delay(10);
++	}
++	r = exy_smc(0x82000410, 1, 0x17c10204, 0);
++	printf("SWEET ABOX: (B) AUD status %#x after %d polls, restore = %lld\n",
++	    touch_rd(pmu, 0x4004), n, r);
++	if (abox_scan("after B", cmu, sys, mmu)) {
++		goto open;
++	}
++
++	printf("SWEET ABOX: (C) smc 0x82000701...\n");
++	touch_wait(11000);
++	r = exy_smc(0x82000701, 0, 0, 0);
++	printf("SWEET ABOX: (C) = %lld\n", r);
++	if (abox_scan("after C", cmu, sys, mmu)) {
++		goto open;
++	}
++	printf("SWEET ABOX: sysreg still refuses the AP\n");
++	return;
++open:
++	printf("SWEET ABOX: sysreg open; SysMMU ctrl/cfg/status/version follow\n");
++	abox_peek("mmu+0x4", mmu + 0x4, 0x17e00004);
++	abox_peek("mmu+0x8", mmu + 0x8, 0x17e00008);
++	abox_peek("mmu+0x34", mmu + 0x34, 0x17e00034);
+ }
+ 
+ static void
+diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
+index a8c99d8..ab62b80 100644
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -1486,6 +1486,8 @@ handle_user_abort(arm_saved_state_t *state, uint32_t esr, vm_offset_t fault_addr
+ 	__builtin_unreachable();
+ }
+ 
++extern const char sweet_probe_ld[], sweet_probe_fail[];
++
+ static void
+ handle_kernel_abort_recover(
+ 	arm_saved_state_t              *state,
+@@ -1517,6 +1519,22 @@ handle_kernel_abort(arm_saved_state_t *state, uint32_t esr, vm_offset_t fault_ad
+ 	(void)expected_fault_handler;
+ #endif /* CONFIG_XNUPOST */
+ 
++	/* SWEET: bus-error-safe MMIO probe (bsd/dev/sweet_touch.c) */
++	if (fault_code == FSC_SYNC_EXT_ABORT &&
++	    get_saved_state_pc(state) == (register_t)(uintptr_t)sweet_probe_ld) {
++		kprintf("sweet_probe: bus error at %p\n", (void *)fault_addr);
++#if defined(HAS_APPLE_PAC)
++		MANIPULATE_SIGNED_THREAD_STATE(state,
++		    "mov	x1, %[pc]		\n"
++		    "str	x1, [x0, %[SS64_PC]]	\n",
++		    [pc] "r"((uintptr_t)sweet_probe_fail)
++		    );
++#else
++		saved_state64(state)->pc = (uintptr_t)sweet_probe_fail;
++#endif
++		return;
++	}
++
+ #if CONFIG_DTRACE
+ 	if (is_vm_fault(fault_code) && thread->t_dtrace_inprobe) { /* Executing under dtrace_probe? */
+ 		if (dtrace_tally_fault(fault_addr)) { /* Should a fault under dtrace be ignored? */
