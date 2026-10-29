@@ -1,0 +1,72 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 186f4b3..becfb07 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -909,6 +909,42 @@ exy_audio_tone(const struct aspi *b)
+ 	printf("SWEET AUDIO: tone off after %u s\n", secs);
+ }
+ 
++/*
++ * Stage 3a (sweetaudio=3): ABOX state, read only. PMU (sound/soc/samsung/
++ * abox/abox.c, CONFIG_SOC_EXYNOS9810): ABOX_MAGIC 0x814, ABOX_CPU_
++ * CONFIGURATION 0x415C (bit 0 local power), ABOX_CPU_STATUS 0x4160 (bit 0
++ * on), ABOX_CPU_OPTION 0x4164 (bit 28 enable CPU). Then ABOX SFR 0x17C50000
++ * (IP_INDEX, VERSION, SYSPOWER_CTRL/STATUS), its sysreg 0x17C10000
++ * (MISC_CON 0x32C) and its SysMMU 0x17E00000 (MMU_CTRL: 0x5 enabled, 0
++ * bypass; CFG, STATUS, VERSION 0x34; exynos-iommu.h). Those blocks may be
++ * clock gated: a line is logged and flushed (sweetlog: every 10 s) before
++ * each read, so a hang names the block.
++ */
++static void
++exy_abox_probe(void)
++{
++	vm_offset_t pmu = ml_io_map(EXY_PMU_PA, 0x5000);
++	vm_offset_t sfr = ml_io_map(0x17c50000, PAGE_SIZE), sys = ml_io_map(0x17c10000, PAGE_SIZE);
++	vm_offset_t mmu = ml_io_map(0x17e00000, PAGE_SIZE);
++	if (!pmu || !sfr || !sys || !mmu) {
++		printf("SWEET ABOX: mappings failed\n");
++		return;
++	}
++	printf("SWEET ABOX: PMU magic %#x cpu_config %#x cpu_status %#x cpu_option %#x\n",
++	    touch_rd(pmu, 0x814), touch_rd(pmu, 0x415c), touch_rd(pmu, 0x4160), touch_rd(pmu, 0x4164));
++	printf("SWEET ABOX: reading ABOX SFR 0x17c50000...\n");
++	touch_wait(11000);         /* past one 10 s log flush: a hang leaves this line on UFS */
++	printf("SWEET ABOX: SFR ip_index %#x version %#x syspower ctrl %#x status %#x\n",
++	    touch_rd(sfr, 0x0), touch_rd(sfr, 0x4), touch_rd(sfr, 0x10), touch_rd(sfr, 0x14));
++	printf("SWEET ABOX: reading sysreg 0x17c10000...\n");
++	touch_wait(11000);         /* past one 10 s log flush: a hang leaves this line on UFS */
++	printf("SWEET ABOX: sysreg misc_con %#x l2_cache_con %#x\n", touch_rd(sys, 0x32c), touch_rd(sys, 0x328));
++	printf("SWEET ABOX: reading SysMMU 0x17e00000...\n");
++	touch_wait(11000);         /* past one 10 s log flush: a hang leaves this line on UFS */
++	printf("SWEET ABOX: SysMMU ctrl %#x cfg %#x status %#x version %#x\n",
++	    touch_rd(mmu, 0x0), touch_rd(mmu, 0x4), touch_rd(mmu, 0x8), touch_rd(mmu, 0x34));
++}
++
+ static void
+ exy_audio_probe(void)
+ {
+@@ -972,8 +1008,8 @@ exy_audio_probe(void)
+ 		apin_dat(&rst, 1);
+ 		delay(20000);
+ 	}
+-	if (on >= 2) {
+-		printf("SWEET AUDIO: stage 2 (sweetaudio=2): earpiece tone\n");
++	if (on == 2) {
++		printf("SWEET AUDIO: stage 2 (sweetaudio=2): headphone tone\n");
+ 	}
+ 	/* wiring found by boot-ios18 (all 6 orders tried): CLK GPP0-4, MOSI GPP0-5, MISO GPP0-6 */
+ 	struct aspi bus = {
+@@ -991,9 +1027,12 @@ exy_audio_probe(void)
+ 	delay(10);
+ 	uint32_t id = madera_rd(&bus, 0), crev = madera_rd(&bus, 1);
+ 	printf("SWEET AUDIO: CS47L93 register 0 = %#x (expect 0x6371), revision %#x\n", id, crev);
+-	if (id == 0x6371 && on >= 2) {
++	if (id == 0x6371 && on == 2) {
+ 		exy_audio_tone(&bus);
+ 	}
++	if (on == 3) {
++		exy_abox_probe();
++	}
+ 	touch_wr(p0, EXY_GPP0 + 4, d0);
+ 	touch_wr(p0, EXY_GPP0, c0);
+ 	if (was_reset) {
