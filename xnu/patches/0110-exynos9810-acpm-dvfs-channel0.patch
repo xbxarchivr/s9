@@ -1,0 +1,77 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 4e0e789..486cea3 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -402,8 +402,9 @@ struct acpm_ch {
+ };
+ static struct acpm_ch acpm_mfd, acpm_dvfs;
+ 
++/* by_index: entry number id of the table (acpm_ipc_send_data's channel[id]) */
+ static bool
+-exy_acpm_init(struct acpm_ch *ch, uint32_t id)
++exy_acpm_init(struct acpm_ch *ch, uint32_t id, bool by_index)
+ {
+ 	vm_offset_t init = st.sram + EXY_ACPM_INITDATA;
+ 	uint32_t tbl = touch_rd(init, 0x08), apmax = touch_rd(init, 0x18);
+@@ -413,9 +414,10 @@ exy_acpm_init(struct acpm_ch *ch, uint32_t id)
+ 	}
+ 	for (uint32_t i = 0; i < apmax; i++) {
+ 		vm_offset_t e = st.sram + tbl + 72 * i;         /* struct ipc_channel */
+-		if (touch_rd(e, 0) != id) {
++		if (by_index ? i != id : touch_rd(e, 0) != id) {
+ 			continue;
+ 		}
++		id = touch_rd(e, 0);
+ 		ch->id = id;
+ 		ch->tx_rear = st.sram + touch_rd(e, 16);        /* AP sends on ch.rx_* */
+ 		ch->tx_front = st.sram + touch_rd(e, 20);
+@@ -508,12 +510,15 @@ exy_acpm_pmic(uint32_t reg, uint32_t cmd1)
+ }
+ 
+ /*
+- * Exynos 9810 DVFS through the APM (acpm_dvfs.c, DT acpm-ipc-channel 5):
+- * cmd[0] = domain (cal-id & 0xff: 0 MIF, 1 INT, 2 CPUCL0 = A55, 3 CPUCL1 =
+- * M3, 4 G3D), cmd[1] = kHz, cmd[2] = FREQ_REQ 0 / FREQ_GET 1. The APM
+- * picks the voltage from its own ECT table, as for Linux's cpufreq.
++ * Exynos 9810 DVFS through the APM (acpm_dvfs.c): cmd[0] = domain (cal-id &
++ * 0xff: 0 MIF, 1 INT, 2 CPUCL0 = A55, 3 CPUCL1 = M3, 4 G3D), cmd[1] = kHz,
++ * cmd[2] = FREQ_REQ 0 / FREQ_GET 1. The APM picks the voltage from its own
++ * ECT table, as for Linux's cpufreq. Channel: the DT says 5, but stock
++ * Linux's acpm_dvfs_init fails (-ENOENT, "acpm_dvfs_init fail ret = -2" in
++ * TWRP's dmesg), so ch_num stays 0 and every request goes to channel[0];
++ * channel 5 never answered (boot-ios7). Boot-arg sweetdvfsch overrides.
+  */
+-#define EXY_ACPM_DVFS_CH  5u
++#define EXY_ACPM_DVFS_CH  0u
+ #define EXY_DVFS_MIF      0u
+ #define EXY_DVFS_CPUCL0   2u
+ #define EXY_CL0_MAX_KHZ   1794000u    /* DT cpufreq-ufc: cl0 limits */
+@@ -537,12 +542,17 @@ static void
+ exy_cpu_dvfs(void)
+ {
+ 	static const char *const names[] = {"mif", "int", "cl0", "cl1", "g3d"};
+-	uint32_t cpu = 0, mif = 0;
++	uint32_t cpu = 0, mif = 0, chn = EXY_ACPM_DVFS_CH;
+ 	(void)PE_parse_boot_argn("sweetcpufreq", &cpu, sizeof(cpu));
+ 	(void)PE_parse_boot_argn("sweetmiffreq", &mif, sizeof(mif));
+-	if (!exy_acpm_init(&acpm_dvfs, EXY_ACPM_DVFS_CH)) {
++	(void)PE_parse_boot_argn("sweetdvfsch", &chn, sizeof(chn));
++	if (!exy_acpm_init(&acpm_dvfs, chn, true)) {
+ 		return;
+ 	}
++	printf("SWEET DVFS: channel[%u] id %u qlen %u esz %u tx f/r %u/%u rx f/r %u/%u\n",
++	    chn, acpm_dvfs.id, acpm_dvfs.len, acpm_dvfs.size,
++	    touch_rd(acpm_dvfs.tx_front, 0), touch_rd(acpm_dvfs.tx_rear, 0),
++	    touch_rd(acpm_dvfs.rx_front, 0), touch_rd(acpm_dvfs.rx_rear, 0));
+ 	for (uint32_t d = 0; d < 5; d++) {
+ 		printf("SWEET DVFS: %s %ld kHz\n", names[d], exy_dvfs(d, 1, 0));
+ 	}
+@@ -565,7 +575,7 @@ exy_cpu_dvfs(void)
+ static bool
+ exy_touch_power(void)
+ {
+-	if (!exy_acpm_init(&acpm_mfd, EXY_ACPM_MFD_CH)) {
++	if (!exy_acpm_init(&acpm_mfd, EXY_ACPM_MFD_CH, false)) {
+ 		return false;
+ 	}
+ 	int l35 = exy_acpm_pmic(EXY_L35CTRL, 0), l43 = exy_acpm_pmic(EXY_L43CTRL, 0);

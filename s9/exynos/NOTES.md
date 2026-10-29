@@ -799,3 +799,9 @@ Chlorophyll (ry-diffusion): Metal on Mesa freedreno for Adreno 630 (iOS 18 arm64
 
 - boot-ios7 flashed 2026-10-29 with verified readback (sha256 f2651ded...), rebooted into iOS. Result pending.
 
+
+## boot-ios7 result + 0110 (2026-10-29)
+
+- boot-ios7 log (s9/logs/boot-ios7.txt, observed): every `SWEET DVFS` FREQ_GET returned -1 (timeout) on ACPM channel 5, so the cl0 -> 1794000 request did nothing. Touch still fine.
+- TWRP dmesg (observed): `acpm_dvfs_init fail ret = -2` -> stock Linux never gets channel 5 (the node passed via exynos_acpm_set_device has no acpm-ipc-channel), so acpm_dvfs.ch_num stays 0 and all DVFS requests go to acpm_ipc channel[0]. cal-if domain ids confirmed by dmesg: dvfs_mif 0, int 1, cpucl0 2, cpucl1 3, g3d 4. TWRP runs cl0 at 1690000 (available 455000..1794000), cl1 at 962000.
+- Patch 0110 (xnuw HEAD): DVFS channel = table entry 0 by index (like channel[ch_num]), boot-arg sweetdvfsch=<index> overrides; logs `SWEET DVFS: channel[n] id .. qlen .. esz .. tx f/r .. rx f/r ..`.
