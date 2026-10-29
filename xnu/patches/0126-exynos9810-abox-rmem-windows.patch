@@ -1,8 +1,16 @@
 diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
-index 40a0222..96f9734 100644
+index 40a0222..8da1ab0 100644
 --- a/bsd/dev/sweet_touch.c
 +++ b/bsd/dev/sweet_touch.c
-@@ -1139,6 +1139,24 @@ abox_copy(vm_offset_t dst, const uint8_t *src, uint32_t len, uint32_t total)
+@@ -42,6 +42,7 @@ extern int sweet_is_exynos(void);
+ #include <libkern/OSAtomic.h>
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++extern void ml_io_unmap(vm_offset_t, vm_size_t);
+ /* Mach MIG declaration is not included by BSD's exported thread.h. */
+ extern kern_return_t thread_terminate(thread_t);
+ extern void sweet_hid_touch(int finger, int down, int x, int y);
+@@ -1139,6 +1140,24 @@ abox_copy(vm_offset_t dst, const uint8_t *src, uint32_t len, uint32_t total)
  	__asm__ volatile("dsb sy" ::: "memory");
  }
  
@@ -27,7 +35,7 @@ index 40a0222..96f9734 100644
  static const uint8_t *
  abox_blob(const char *name, uint32_t *size)
  {
-@@ -1172,14 +1190,16 @@ exy_abox_boot(void)
+@@ -1172,14 +1191,16 @@ exy_abox_boot(void)
  	vm_offset_t sfr = ml_io_map(0x17c50000, 0x4000), sys = ml_io_map(0x17c10000, PAGE_SIZE);
  	vm_offset_t mmu = ml_io_map(0x17e00000, PAGE_SIZE), cmu = ml_io_map(0x17c00000, 0x4000);
  	vm_offset_t gic = ml_io_map(0x17cf0000, 0x4000), sram = ml_io_map(0x17d00000, ABOX_SRAM_SIZE);
@@ -47,7 +55,7 @@ index 40a0222..96f9734 100644
  	    !abox_peek("sram", sram, 0x17d00000) || !abox_peek("sysmmu", mmu, 0x17e00000) ||
  	    !abox_peek("misc_con", sys + 0x32c, 0x17c1032c)) {
  		printf("SWEET ABOX: a block refuses the AP, not booting\n");
-@@ -1194,8 +1214,7 @@ exy_abox_boot(void)
+@@ -1194,8 +1215,7 @@ exy_abox_boot(void)
  	/* SysMMU page table and translation */
  	printf("SWEET ABOX: writing firmware and the SysMMU table...\n");
  	touch_wait(11000);         /* past one 10 s log flush */
@@ -57,7 +65,7 @@ index 40a0222..96f9734 100644
  	static const struct { uint32_t iova, off, mb; } map[] = {
  		{ 0x80000000u, ABOX_RM_DRAM, 18 }, { 0x90000000u, ABOX_RM_IVA, 1 },
  		{ 0x91000000u, ABOX_RM_RDMA, 8 }, { 0xa0000000u, ABOX_RM_VSS, 6 },
-@@ -1204,12 +1223,13 @@ exy_abox_boot(void)
+@@ -1204,12 +1224,13 @@ exy_abox_boot(void)
  	for (unsigned i = 0; i < sizeof(map) / sizeof(map[0]); i++) {
  		for (uint32_t m = 0; m < map[i].mb; m++) {
  			uint32_t pa = ABOX_RMEM_PA + map[i].off + (m << 20);
@@ -75,7 +83,7 @@ index 40a0222..96f9734 100644
  
  	/* abox_enable(): sysreg, GIC, firmware, DRAM on, CPU power, pads */
  	touch_wr(mmu, 0x0, 0x7);                                 /* CTRL_BLOCK */
-@@ -1229,12 +1249,15 @@ exy_abox_boot(void)
+@@ -1229,12 +1250,15 @@ exy_abox_boot(void)
  	touch_wr(gic, 0x2000, 0x3);
  
  	abox_copy(sram, fw_sram, sram_len, ABOX_SRAM_SIZE);
