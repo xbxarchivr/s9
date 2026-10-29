@@ -30,6 +30,26 @@
  */
 #define SYSREG_USI03	0x1041101CUL
 #define USI_I2C_SW_CONF	(1u << 2)
+
+/*
+ * X6.2: with the mode set, writes stick but every transfer stays
+ * MASTER_BUSY (TRANS_STATUS 0x000A0003): the USI03 operating clock is not
+ * running. CMU_PERIC0 0x10400000 (cmucal-sfr.c / cmucal-node.c, DT clocks
+ * USI03 = DIV_CLK_PERIC0_USI03_USI and GATE_USI03 = USI03_USI_QCH):
+ * MUX_CLKCMU_PERIC0_IP_USER -> GATE_CLK_PERIC0_USI03_USI -> DIV ->
+ * GOUT USI03_USI_IPCLK (+ RSTnSYNC), Q-channel on top. Gates: bit 20
+ * MANUAL, 21 CG_VAL, 28 auto gating; QCH: 0 ENABLE, 1 CLOCK_REQ,
+ * 2 IGNORE_FORCE_PM_EN.
+ */
+#define CMU_PERIC0	0x10400000UL
+#define CMU_MUX_IP_USER	(CMU_PERIC0 + 0x0120)	/* bit 4 MUX_SEL */
+#define CMU_DIV_USI03	(CMU_PERIC0 + 0x1810)	/* bits 0-3 ratio, 16 busy */
+#define CMU_GATE_USI03	(CMU_PERIC0 + 0x2018)
+#define CMU_GOUT_RSTSYN	(CMU_PERIC0 + 0x206c)
+#define CMU_GOUT_IPCLK	(CMU_PERIC0 + 0x20dc)
+#define CMU_QCH_USI03	(CMU_PERIC0 + 0x3038)
+#define GATE_MANUAL_ON	(1u << 20 | 1u << 21)
+#define GATE_AUTO	(1u << 28)
 #define PERIC1_GPG3	0x108300C0UL	/* CON +0, DAT +4, PUD +8 */
 #define ALIVE_GPA1	0x14050040UL
 #define TS_ADDR		0x48
@@ -241,7 +261,7 @@ void shim_main(uint64_t dtb)
 	if (!xp.fb_ok)
 		xp_reset();
 	con_clear(GREY);
-	con_title("EXYNOS X6.1 RUNS");
+	con_title("EXYNOS X6.2 RUNS");
 	con_str("MODEL", xp.model[0] ? xp.model : "(no DTB)");
 
 	/* what S-Boot left: pins, IRQ level, and the HSI2C block itself */
@@ -274,6 +294,33 @@ void shim_main(uint64_t dtb)
 	p = put_hex(put(p, " conf "), hr(CONF), 8);
 	put_hex(put(p, " fs3 "), hr(TIMING_FS3), 8);
 	con_str("SETUP", b);
+	con_skip();
+
+	/* X6.2: the USI03 operating clock, as S-Boot left it, then forced on */
+	p = put_hex(put(b, "mux "), rd32(CMU_MUX_IP_USER), 8);
+	p = put_hex(put(p, " div "), rd32(CMU_DIV_USI03), 8);
+	p = put_hex(put(p, " gate "), rd32(CMU_GATE_USI03), 8);
+	con_str("CMU", b);
+	p = put_hex(put(b, "rstsyn "), rd32(CMU_GOUT_RSTSYN), 8);
+	p = put_hex(put(p, " ipclk "), rd32(CMU_GOUT_IPCLK), 8);
+	put_hex(put(p, " qch "), rd32(CMU_QCH_USI03), 8);
+	con_str("", b);
+	const uintptr_t gates[3] = { CMU_GATE_USI03, CMU_GOUT_RSTSYN, CMU_GOUT_IPCLK };
+	for (int i = 0; i < 3; i++)
+		wr32(gates[i], (rd32(gates[i]) & ~GATE_AUTO) | GATE_MANUAL_ON);
+	hsi2c_reset();
+	r = ts_read(SEC_TS_READ_ID, d, 3);
+	put_bytes(put_rc(b, "gates on: id", r), d, r ? 0 : 3);
+	con_str("TRY 1", b);
+	if (r) {
+		/* Q-channel: auto gating off, clock requested */
+		wr32(CMU_QCH_USI03, (rd32(CMU_QCH_USI03) & ~1u) | 1u << 1 | 1u << 2);
+		hsi2c_reset();
+		r = ts_read(SEC_TS_READ_ID, d, 3);
+		p = put_hex(put(b, "qch "), rd32(CMU_QCH_USI03), 8);
+		put_bytes(put_rc(put(p, " "), "id", r), d, r ? 0 : 3);
+		con_str("TRY 2", b);
+	}
 	con_skip();
 
 	/* the chip: pending event (boot status), IDs */
