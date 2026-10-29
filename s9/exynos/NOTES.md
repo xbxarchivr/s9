@@ -1062,3 +1062,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
   - Next: SysMMU (0x17E00000) read on its own; ABOX sysreg via SMC (find Samsung's SMC_CMD_REG / SMC_REG_ID_SFR_R/W ids in include/soc/samsung/exynos-smc.h of the S9 kernel).
   - User: boot-ios22 **kernel panicked** (not just froze) at that read - consistent with an SError from a TrustZone-protected access. Panic text not in the sweetlog (last flush was before the read).
 
+- boot-ios15 (4 GB, battery, brightness, no audio probe) restored on BOOT 2026-10-29 after the boot-ios22 panic (verified readback 9c90a31b...), rebooted into iOS.
+
