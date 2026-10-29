@@ -1002,3 +1002,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
   - Next (stage 1b): release the codec reset (GPG1-0 high; Linux madera does this after enabling the supplies) and read register 0 over SPI (expect 0x6371). Then stage 2 (tone to the earpiece) needs MCLK: codec FLL ref = xclkout 26 MHz on AUD pin gpb0-0 (AUD domain is on).
 - **Patch 0116 (stage 1b, written):** exy_audio_probe releases the CS47L93 reset (GPG1-0 high) when the supplies are on and the pin is an output driven low, waits 20 ms, reads registers 0 (silicon ID, expect 0x6371) and 1 (hardware revision) over bit-banged SPI, then drives reset low again (as S-Boot left it). Still no codec register written.
 
+- **0116 compiled** (run 40902283550, success): `out/exynos/xnu13/kernel.development.sweet` sha256 1fb42d21... **Boot image `out/exynos/boot-ios17.img`** (sha256 27b10fdc...) = boot-ios16 cmdline (4 GB, sweetaudio=1) with the 0116 kernel. Not flashed.
+
