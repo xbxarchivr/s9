@@ -1110,3 +1110,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 
 - **boot-ios27 flashed** to BOOT (sda10), readback sha256 fff9251a... matches. Rebooted. Fallback boot-ios25 / boot-ios15.
 
+- **boot-ios27 panic (photo, observed):** got past the blobs and `SWEET ABOX: rmem 0xfb200000 = 0` (abox_rmem readable by the AP), then `vm_map_delete(...): Attempting to remove permanent VM map entry ... @vm_map.c:7940` from ml_io_unmap: on this XNU ml_io_map allocates KMA_PERMANENT in io_submap and can never be unmapped.
+- **Patch 0127 (written, not built):** the abox_rmem windows use ml_io_map_unmappable(pa, 1 MB, VM_WIMG_IO 0x7) (KMA_DATA in kernel_map, which ml_io_unmap frees); declared extern in sweet_touch.c since BSD does not see it. Rule: any mapping that is unmapped later must come from ml_io_map_unmappable.

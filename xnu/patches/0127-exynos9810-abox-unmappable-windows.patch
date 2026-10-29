@@ -1,0 +1,41 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 8da1ab0..fe7db35 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -43,6 +43,9 @@ extern int sweet_is_exynos(void);
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ extern void ml_io_unmap(vm_offset_t, vm_size_t);
++/* ml_io_map entries are KMA_PERMANENT; only this variant may be unmapped */
++extern vm_offset_t ml_io_map_unmappable(vm_offset_t, vm_size_t, unsigned int);
++#define SWEET_WIMG_IO   0x7     /* VM_WIMG_IO, osfmk/arm/memory_types.h */
+ /* Mach MIG declaration is not included by BSD's exported thread.h. */
+ extern kern_return_t thread_terminate(thread_t);
+ extern void sweet_hid_touch(int finger, int down, int x, int y);
+@@ -1152,7 +1155,7 @@ abox_rm_write(uint32_t off, const uint8_t *src, uint32_t len, uint32_t total)
+ 	for (uint32_t w = 0; w < total; w += ABOX_RM_WIN) {
+ 		uint32_t n = total - w < ABOX_RM_WIN ? total - w : ABOX_RM_WIN;
+ 		uint32_t have = len > w ? (len - w < n ? len - w : n) : 0;
+-		vm_offset_t va = ml_io_map(ABOX_RMEM_PA + off + w, ABOX_RM_WIN);
++		vm_offset_t va = ml_io_map_unmappable(ABOX_RMEM_PA + off + w, ABOX_RM_WIN, SWEET_WIMG_IO);
+ 		abox_copy(va, have ? src + w : NULL, have, n);
+ 		ml_io_unmap(va, ABOX_RM_WIN);
+ 	}
+@@ -1196,7 +1199,7 @@ exy_abox_boot(void)
+ 		return;
+ 	}
+ 	uint32_t v;
+-	vm_offset_t rm = ml_io_map(ABOX_RMEM_PA, ABOX_RM_WIN);
++	vm_offset_t rm = ml_io_map_unmappable(ABOX_RMEM_PA, ABOX_RM_WIN, SWEET_WIMG_IO);
+ 	bool rm_ok = abox_peek("rmem", rm, ABOX_RMEM_PA);
+ 	ml_io_unmap(rm, ABOX_RM_WIN);
+ 	/* every block is read once through the bus-error-safe path first */
+@@ -1254,7 +1257,7 @@ exy_abox_boot(void)
+ 	if (fw_iva) {
+ 		abox_rm_write(ABOX_RM_IVA, fw_iva, iva_len, ABOX_IVA_FW_SIZE);
+ 	}
+-	rm = ml_io_map(ABOX_RMEM_PA + ABOX_RM_DRAM, ABOX_RM_WIN);
++	rm = ml_io_map_unmappable(ABOX_RMEM_PA + ABOX_RM_DRAM, ABOX_RM_WIN, SWEET_WIMG_IO);
+ 	v = touch_rd(rm, 0);
+ 	ml_io_unmap(rm, ABOX_RM_WIN);
+ 	printf("SWEET ABOX: firmware written (sram[0] %#x, dram[0] %#x, file %#x)\n", touch_rd(sram, 0), v,
