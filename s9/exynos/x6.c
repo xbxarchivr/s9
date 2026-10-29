@@ -361,7 +361,7 @@ static char *put_pmic(char *p, const char *name, uint32_t reg)
  */
 #define BB_SCL		4
 #define BB_SDA		5
-#define BB_HALF_US	10
+#define BB_HALF_US	3	/* X6.8: ~150 kHz (X6.7 proved 50 kHz) */
 
 static void bb_line(int pin, int high)
 {
@@ -449,15 +449,23 @@ static int bb_ts_read(uint8_t cmd, uint8_t *buf, unsigned len)
 	return 0;
 }
 
+/* X6.8: a command byte with no data (SENSE_ON, CLEAR_EVENT_STACK) over the bit-banged bus */
+static int bb_ts_cmd(uint8_t cmd)
+{
+	bb_start();
+	if (bb_write_byte(TS_ADDR << 1)) {
+		bb_stop();
+		return 1;
+	}
+	int r = bb_write_byte(cmd) ? 2 : 0;
+	bb_stop();
+	return r;
+}
+
 static int ts_read(uint8_t reg, uint8_t *buf, unsigned len)
 {
 	int r = hsi2c_msg(TS_ADDR, 0, &reg, 1);
 	return r ? r : hsi2c_msg(TS_ADDR, 1, buf, len);
-}
-
-static int ts_cmd(uint8_t cmd)
-{
-	return hsi2c_msg(TS_ADDR, 0, &cmd, 1);
 }
 
 static char *put_bytes(char *p, const uint8_t *b, unsigned n)
@@ -507,7 +515,7 @@ void shim_main(uint64_t dtb)
 	if (!xp.fb_ok)
 		xp_reset();
 	con_clear(GREY);
-	con_title("EXYNOS X6.7 RUNS");
+	con_title("EXYNOS X6.8 RUNS");
 	con_str("MODEL", xp.model[0] ? xp.model : "(no DTB)");
 
 	/* what S-Boot left: pins, IRQ level, and the HSI2C block itself */
@@ -617,29 +625,33 @@ void shim_main(uint64_t dtb)
 	hsi2c_reset();
 	con_skip();
 
-	/* the chip: pending event (boot status), IDs */
+	/* HSI2C, one try for the record (X6.7: NACK on the address) */
+	r = ts_read(SEC_TS_READ_ID, d, 3);
+	put_bytes(put_rc(b, "hsi2c id", r), d, r ? 0 : 3);
+	con_str("HSI2C", b);
+
+	/*
+	 * X6.8: the rest over the bit-banged bus (X6.7: ID AC 37 61, boot 0x20
+	 * app mode): GPP1-4/5 back to inputs (released), then events, IDs,
+	 * clear, sense on.
+	 */
+	wr32(PERIC0_GPP1, rd32(PERIC0_GPP1) & ~(0xffu << 16));
 	for (int i = 0; i < 3; i++) {
-		r = ts_read(SEC_TS_READ_ONE_EVENT, d, 8);
-		put_bytes(put_rc(b, "event", r), d, r ? 0 : 8);
+		r = bb_ts_read(SEC_TS_READ_ONE_EVENT, d, 8);
+		put_bytes(put_dec(put(b, "event rc "), r), d, r ? 0 : 8);
 		con_str(i ? "" : "EVENT", b);
 		if (r)
 			break;
 	}
-	r = ts_read(SEC_TS_READ_ID, d, 3);
-	put_bytes(put_rc(b, "id", r), d, r ? 0 : 3);
-	con_str("ID", b);
-	r = ts_read(SEC_TS_READ_BOOT_STATUS, d, 1);
-	put_bytes(put_rc(b, "boot", r), d, r ? 0 : 1);
-	con_str("BOOT", b);
-	r = ts_read(SEC_TS_READ_DEVICE_ID, d, 5);
-	put_bytes(put_rc(b, "devid", r), d, r ? 0 : 5);
+	r = bb_ts_read(SEC_TS_READ_DEVICE_ID, d, 5);
+	put_bytes(put(put_dec(put(b, "devid rc "), r), "  "), d, r ? 0 : 5);
 	con_str("DEVID", b);
-	r = ts_cmd(SEC_TS_CMD_CLEAR_EVENT_STACK);
+	r = bb_ts_cmd(SEC_TS_CMD_CLEAR_EVENT_STACK);
 	if (!r) {
 		xp_delay_ms(10);
-		r = ts_cmd(SEC_TS_CMD_SENSE_ON);
+		r = bb_ts_cmd(SEC_TS_CMD_SENSE_ON);
 	}
-	put_rc(b, "clear+sense_on", r);
+	put_dec(put(b, "clear+sense_on rc "), r);
 	con_str("SENSE", b);
 	con_skip();
 	con_str("", "Touch the screen: last events below, 60 s.");
@@ -656,7 +668,7 @@ void shim_main(uint64_t dtb)
 	uint64_t t0 = xp_now();
 	for (unsigned s = 0; s <= RUN_SECONDS;) {
 		if (!(rd32(ALIVE_GPA1 + 4) & 1)) {	/* attention: active low */
-			r = ts_read(SEC_TS_READ_ONE_EVENT, d, 8);
+			r = bb_ts_read(SEC_TS_READ_ONE_EVENT, d, 8);
 			events++;
 			if (!r) {
 				unsigned eid = d[0] & 3, tid = d[0] >> 2 & 0xf, st = d[0] >> 6;
@@ -676,7 +688,7 @@ void shim_main(uint64_t dtb)
 					put_bytes(p, d, 8);
 				}
 			} else {
-				put_rc(b, "read", r);
+				put_dec(put(b, "bitbang read rc "), r);
 			}
 			con_set_row(ev_y + row);
 			con_str("", "                                                            ");
