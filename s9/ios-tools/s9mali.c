@@ -82,10 +82,9 @@ submit(uint32_t job, uint64_t *r)
 }
 
 /*
- * Repeat jobs fail on the G72: status 0x58 or the previous run's value in the
- * target, as if the GPU read the descriptor before the CPU's writes. Reading it
- * back plus usleep(1000) before submitting fixed all 200 runs (boot-ios49);
- * these modes separate the two and find how long a wait is needed.
+ * Repeat jobs failed on the G72 without a whole-GPU cache flush around each job
+ * (status 0x58 or the previous run's value in the target, boot-ios48..50).
+ * The same pages run first and last, to show whether order matters.
  */
 static int
 run_mode(const char *name, uint32_t job, uint32_t target, unsigned mode, unsigned spin_us)
@@ -196,16 +195,12 @@ main(void)
 	}
 
 	int bad = 0;
-	bad += run_mode("no wait", job, target, 0, 0);
-	bad += run_mode("read back only", job, target, M_READBACK, 0);
-	bad += run_mode("spin 10 us", job, target, 0, 10);
-	bad += run_mode("spin 100 us", job, target, 0, 100);
-	bad += run_mode("spin 1000 us", job, target, 0, 1000);
-	bad += run_mode("read back + spin 1000 us", job, target, M_READBACK, 1000);
-	bad += run_mode("usleep(1000) only", job, target, M_USLEEP, 0);
-	bad += run_mode("read back + usleep(1000)", job, target, M_READBACK | M_USLEEP, 0);
-	bad += run_mode("read back + usleep(1000), new pages", job, target,
-	    M_READBACK | M_USLEEP | M_NEWJOB | M_NEWTARGET, 0);
+	bad += run_mode("same pages", job, target, 0, 0);
+	bad += run_mode("new job page", job, target, M_NEWJOB, 0);
+	bad += run_mode("new target page", job, target, M_NEWTARGET, 0);
+	bad += run_mode("new job and target pages", job, target, M_NEWJOB | M_NEWTARGET, 0);
+	bad += run_mode("read back", job, target, M_READBACK, 0);
+	bad += run_mode("same pages again", job, target, 0, 0);
 
 	IOConnectCallScalarMethod(conn, SEL_FREE, NULL, 0, NULL, NULL);
 	IOServiceClose(conn);

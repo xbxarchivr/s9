@@ -1,0 +1,150 @@
+diff --git a/iokit/Kernel/arm/SweetMali.cpp b/iokit/Kernel/arm/SweetMali.cpp
+index 4d1aec4..11f26c6 100644
+--- a/iokit/Kernel/arm/SweetMali.cpp
++++ b/iokit/Kernel/arm/SweetMali.cpp
+@@ -26,6 +26,7 @@
+ #include <IOKit/IOMemoryDescriptor.h>
+ #include <pexpert/pexpert.h>
+ #include <libkern/libkern.h>
++#include <kern/clock.h>
+ 
+ #define MALI_REGS_PA    0x17500000ULL
+ #define MALI_REGS_LEN   0x5000
+@@ -40,7 +41,14 @@
+ #define GPU_IRQ_RAW     0x020
+ #define GPU_IRQ_CLEAR   0x024
+ #define GPU_CMD         0x030
++#define GPU_IRQ_CLEANED (1u << 17)
+ #define GPU_FAULT       0x03c
++#define GPU_L2_FEATURES 0x004
++#define GPU_COHER_FEAT  0x300
++#define GPU_COHER_EN    0x304
++#define COHERENCY_NONE  31u
++#define GPU_JM_CONFIG   0xf00
++#define GPU_L2_MMU_CFG  0xf0c
+ #define SHADER_PRESENT  0x100
+ #define TILER_PRESENT   0x110
+ #define L2_PRESENT      0x120
+@@ -100,6 +108,7 @@ class SweetMali : public IOService {
+ 	uint32_t fNext, fShaders, fTiler, fL2, fId;
+ 	bool fPowered;
+ 	bool fChainFlag[3];
++	uint32_t fTimed, fFailLogged;
+ 
+ 	uint32_t rd(uint32_t off) const
+ 	{
+@@ -110,7 +119,20 @@ class SweetMali : public IOService {
+ 		*(volatile uint32_t *)(fRegs + off) = v;
+ 		__asm__ volatile("dsb osh" ::: "memory");
+ 	}
++	static uint64_t now(void)
++	{
++		uint64_t t;
++		clock_get_uptime(&t);
++		return t;
++	}
++	static uint64_t usBetween(uint64_t from, uint64_t to)
++	{
++		uint64_t ns;
++		absolutetime_to_nanoseconds(to - from, &ns);
++		return ns / 1000;
++	}
+ 	bool poll(uint32_t off, uint32_t want, uint32_t mask, uint32_t us);
++	bool flushCaches(void);
+ 	bool setupTables(void);
+ 	void selfTest(void);
+ 
+@@ -149,6 +171,21 @@ SweetMali::poll(uint32_t off, uint32_t want, uint32_t mask, uint32_t us)
+ 	return false;
+ }
+ 
++/*
++ * Whole-GPU cache clean + invalidate, on top of the job's own start and end
++ * flushes: repeat jobs read stale descriptors without something like it
++ * (boot-ios48..50). Whether this is the real fix is what boot-ios51 tests.
++ */
++bool
++SweetMali::flushCaches(void)
++{
++	wr(GPU_IRQ_CLEAR, GPU_IRQ_CLEANED);
++	wr(GPU_CMD, 8);                 /* CLEAN_INV_CACHES */
++	bool ok = poll(GPU_IRQ_RAW, GPU_IRQ_CLEANED, GPU_IRQ_CLEANED, 10000);
++	wr(GPU_IRQ_CLEAR, GPU_IRQ_CLEANED);
++	return ok;
++}
++
+ bool
+ SweetMali::setupTables(void)
+ {
+@@ -179,6 +216,9 @@ SweetMali::powerUp(void)
+ 		return false;
+ 	}
+ 	wr(GPU_IRQ_CLEAR, 0xffffffffu);
++	printf("SWEET MALI: l2 features %#x coherency features %#x enable %#x jm %#x l2_mmu %#x\n",
++	    rd(GPU_L2_FEATURES), rd(GPU_COHER_FEAT), rd(GPU_COHER_EN), rd(GPU_JM_CONFIG), rd(GPU_L2_MMU_CFG));
++	wr(GPU_COHER_EN, COHERENCY_NONE);       /* the CPU does not snoop this memory */
+ 	wr(L2_PWRON, fL2);
+ 	if (!poll(L2_READY, fL2, 0xffffffffu, 100000)) {
+ 		IOLog("SWEET MALI: L2 not ready %#x\n", rd(L2_READY));
+@@ -254,6 +294,9 @@ SweetMali::submit(uint64_t jc, uint32_t slot, SweetMaliResult *r)
+ 	}
+ 	IOLockLock(fLock);
+ 	__asm__ volatile("dsb sy" ::: "memory");
++	uint64_t t0 = now();
++	bool cleanedFirst = flushCaches();
++	uint64_t t1 = now();
+ 	wr(JOB_CLEAR, 0xffffffffu);
+ 	wr(MMU_CLEAR, 0xffffffffu);
+ 	(void)poll(JS(slot, JS_CMD_NEXT), 0, 0xffffffffu, 1000);
+@@ -268,14 +311,26 @@ SweetMali::submit(uint64_t jc, uint32_t slot, SweetMaliResult *r)
+ 	/* done or failed on this slot; a GPU page fault stalls it without either */
+ 	const uint32_t bits = (1u << slot) | (1u << (16 + slot));
+ 	r->finished = false;
+-	for (uint32_t i = 0; i < 1000; i++) {
++	/* short jobs finish in microseconds: spin 2 ms, then sleep */
++	for (uint32_t i = 0; i < 200 + 1000; i++) {
+ 		r->raw = rd(JOB_RAW);
+ 		r->mmuRaw = rd(MMU_RAW);
+ 		if ((r->raw & bits) || r->mmuRaw) {
+ 			r->finished = (r->raw & (1u << slot)) != 0;
+ 			break;
+ 		}
+-		IOSleep(1);
++		if (i < 200) {
++			IODelay(10);
++		} else {
++			IOSleep(1);
++		}
++	}
++	uint64_t t2 = now();
++	bool cleaned = flushCaches();
++	if (fTimed < 8) {
++		fTimed++;
++		printf("SWEET MALI: submit %u: flush before %llu us, job %llu us, flush after %llu us, flushes ok %d %d, raw %#x\n",
++		    fTimed, usBetween(t0, t1), usBetween(t1, t2), usBetween(t2, now()), cleanedFirst, cleaned, r->raw);
+ 	}
+ 	r->status = rd(JS(slot, JS_STATUS));
+ 	r->head = rd(JS(slot, JS_HEAD));
+@@ -283,11 +338,17 @@ SweetMali::submit(uint64_t jc, uint32_t slot, SweetMaliResult *r)
+ 	r->asAddr = rd(AS0_FAULTADDR);
+ 	r->gpuFault = rd(GPU_FAULT);
+ 	if (!r->finished) {
+-		printf("SWEET MALI: job %#llx slot %u stuck: raw %#x js_state %#x status %#x head %#x cmd_next %#x head_next %#x config %#x mmu %#x fault %#x addr %#x gpu %#x\n",
+-		    jc, slot, r->raw, rd(JOB_JS_STATE), r->status, r->head, rd(JS(slot, JS_CMD_NEXT)),
+-		    rd(JS(slot, JS_HEAD_NEXT)), rd(JS(slot, JS_CONFIG_CUR)), r->mmuRaw, r->asFault, r->asAddr, r->gpuFault);
+-		wr(JS(slot, JS_COMMAND), 3);    /* HARD_STOP */
+-		IOSleep(1);
++		if (fFailLogged < 8) {
++			fFailLogged++;
++			printf("SWEET MALI: job %#llx slot %u not done: raw %#x js_state %#x status %#x head %#x cmd_next %#x head_next %#x config %#x mmu %#x fault %#x addr %#x gpu %#x\n",
++			    jc, slot, r->raw, rd(JOB_JS_STATE), r->status, r->head, rd(JS(slot, JS_CMD_NEXT)),
++			    rd(JS(slot, JS_HEAD_NEXT)), rd(JS(slot, JS_CONFIG_CUR)), r->mmuRaw, r->asFault, r->asAddr, r->gpuFault);
++		}
++		/* a job the GPU rejected has already ended: nothing to stop */
++		if (!(r->raw & (1u << (16 + slot)))) {
++			wr(JS(slot, JS_COMMAND), 3);    /* HARD_STOP */
++			IOSleep(1);
++		}
+ 	}
+ 	wr(JOB_CLEAR, 0xffffffffu);
+ 	wr(MMU_CLEAR, 0xffffffffu);
