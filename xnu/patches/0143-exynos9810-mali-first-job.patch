@@ -1,0 +1,107 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 110c748..809b9bf 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -2049,6 +2049,92 @@ exy_abox_play(const struct aspi *b, vm_offset_t p1, bool spk)
+ 	printf("SWEET ABOX: play done\n");
+ }
+ 
++/*
++ * GPU stage 2a (sweetgpu=3): the first job. Facts from Linux panfrost
++ * (panfrost_regs.h, _mmu.c, _job.c, io-pgtable-arm.c) and Mesa's midgard.xml.
++ * G72 has AARCH64_MMU: AS_TRANSCFG ADRMODE_AARCH64_4K, 48-bit VA (INA_BITS 7),
++ * 4 levels, table entry pa | 3, page pa | 3 | AF | SH_OS | AP_UNPRIV | nG,
++ * ATTRINDX 0. MEMATTR 0x4c in all slots: inner/outer non-cacheable, the GPU
++ * and this Device mapping share no cache. Memory: DT cp_ram_logging 0xf9200000
++ * (32 MB in the RAM hole, unused here, no modem). Job: header 32 bytes,
++ * word 4 = 64-bit | type 2 << 1 (Write value), then payload {addr, type 6
++ * immediate 32 at +8, value at +16}.
++ */
++#define MALI_MEM_PA    0xf9200000u
++#define MALI_JOB_VA    0x01000000u
++
++static void
++exy_gpu_job(vm_offset_t g, uint32_t shaders)
++{
++	vm_offset_t m = ml_io_map_unmappable(MALI_MEM_PA, 0x8000, SWEET_WIMG_IO);
++	if (!abox_peek("gpu mem", m, MALI_MEM_PA)) {
++		ml_io_unmap(m, 0x8000);
++		printf("SWEET GPU: job memory refuses the AP\n");
++		return;
++	}
++	for (uint32_t o = 0; o < 0x8000; o += 4) {
++		*(volatile uint32_t *)(m + o) = 0;
++	}
++	const uint32_t page = 3u | 1u << 6 | 2u << 8 | 1u << 10 | 1u << 11;
++	touch_wr(m, 0x0000, (MALI_MEM_PA + 0x1000) | 3);        /* L0[0] -> L1 */
++	touch_wr(m, 0x1000, (MALI_MEM_PA + 0x2000) | 3);        /* L1[0] -> L2 */
++	touch_wr(m, 0x2000 + 8 * (MALI_JOB_VA >> 21), (MALI_MEM_PA + 0x3000) | 3);
++	touch_wr(m, 0x3000, (MALI_MEM_PA + 0x4000) | page);     /* VA +0: the job */
++	touch_wr(m, 0x3008, (MALI_MEM_PA + 0x5000) | page);     /* VA +0x1000: its target */
++	touch_wr(m, 0x4010, 1u | 2u << 1 | 1u << 16);           /* 64-bit, Write value, index 1 */
++	touch_wr(m, 0x4020, MALI_JOB_VA + 0x1000);
++	touch_wr(m, 0x4028, 6);                                 /* Immediate 32 */
++	touch_wr(m, 0x4030, 0xc0ffee42u);
++	__asm__ volatile("dsb sy" ::: "memory");
++
++	for (int i = 0; i < 10000 && (abox_sp(g + 0x2428) & 1); i++) {  /* AS0 STATUS active */
++		delay(1);
++	}
++	touch_wr(g, 0x2400, MALI_MEM_PA);                       /* AS0 TRANSTAB */
++	touch_wr(g, 0x2404, 0);
++	touch_wr(g, 0x2408, 0x4c4c4c4cu);                       /* MEMATTR */
++	touch_wr(g, 0x240c, 0x4c4c4c4cu);
++	touch_wr(g, 0x2430, 1u << 24 | 7u << 6 | 6);            /* PTW NC, INA 7, AARCH64_4K */
++	touch_wr(g, 0x2434, 0);
++	touch_wr(g, 0x2418, 1);                                 /* AS_COMMAND_UPDATE */
++	for (int i = 0; i < 10000 && (abox_sp(g + 0x2428) & 1); i++) {
++		delay(1);
++	}
++	touch_wr(g, 0x1004, 0xffffffffu);                       /* JOB_INT_CLEAR */
++	touch_wr(g, 0x2004, 0xffffffffu);                       /* MMU_INT_CLEAR */
++	printf("SWEET GPU: AS0 transtab %#x transcfg %#x status %#x; submitting the job...\n", abox_sp(g + 0x2400),
++	    abox_sp(g + 0x2430), abox_sp(g + 0x2428));
++	touch_wait(11000);
++	/* slot 1, panfrost_job_hw_submit: AS 0, priority 8, clean + invalidate at both ends */
++	touch_wr(g, 0x18c0, MALI_JOB_VA);                       /* JS1 HEAD_NEXT */
++	touch_wr(g, 0x18c4, 0);
++	touch_wr(g, 0x18d0, shaders);                           /* AFFINITY_NEXT */
++	touch_wr(g, 0x18d4, 0);
++	touch_wr(g, 0x18d8, 8u << 16 | 3u << 8 | 3u << 12);     /* CONFIG_NEXT */
++	touch_wr(g, 0x18e0, 1);                                 /* COMMAND_NEXT START */
++	int n;
++	uint32_t raw = 0;
++	for (n = 0; n < 1000000; n++) {
++		raw = abox_sp(g + 0x1000);
++		if (raw & (2u | 1u << 17)) {
++			break;
++		}
++		delay(1);
++	}
++	printf("SWEET GPU: job int raw %#x after %d polls; JS1 status %#x head %#x; MMU raw %#x AS0 fault %#x addr %#x; GPU fault %#x\n",
++	    raw, n, abox_sp(g + 0x18a4), abox_sp(g + 0x1880), abox_sp(g + 0x2000), abox_sp(g + 0x241c), abox_sp(g + 0x2420),
++	    abox_sp(g + 0x3c));
++	printf("SWEET GPU: job exception %#x first incomplete %#x fault ptr %#x; target %#x (want 0xc0ffee42)\n", abox_sp(m + 0x4000),
++	    abox_sp(m + 0x4004), abox_sp(m + 0x4008), abox_sp(m + 0x5000));
++	if (!(raw & 2u)) {
++		touch_wr(g, 0x18a0, 3);                         /* JS_COMMAND HARD_STOP */
++		delay(1000);
++	}
++	touch_wr(g, 0x1004, 0xffffffffu);
++	touch_wr(g, 0x2004, 0xffffffffu);
++	ml_io_unmap(m, 0x8000);
++}
++
+ /*
+  * GPU stage 1 (boot-arg sweetgpu=1 read, 2 also reset + power cycle the cores):
+  * Mali-G72 (DT mali@17500000, reg 0x5000; no firmware on this Job Manager
+@@ -2126,6 +2212,9 @@ exy_gpu_probe(void)
+ 	}
+ 	printf("SWEET GPU: READY shader %#x tiler %#x l2 %#x after %d polls, raw %#x fault %#x status %#x\n", abox_sp(g + 0x140),
+ 	    abox_sp(g + 0x150), abox_sp(g + 0x160), n, abox_sp(g + 0x20), abox_sp(g + 0x3c), abox_sp(g + 0x34));
++	if (on >= 3) {
++		exy_gpu_job(g, sh);
++	}
+ 	touch_wr(g, 0x1c0, sh);                 /* off again: nothing uses them yet */
+ 	touch_wr(g, 0x1d0, ti);
+ 	delay(1000);
