@@ -41,6 +41,7 @@ PAGE = 0x4000
 BOOT_LINE_LENGTH = 608
 CMDLINE = 0x48
 SEG_TABLE = CMDLINE + BOOT_LINE_LENGTH	# 0x2a8
+DTB_HOLE = (0x1000000, 0x1100000)	# payload offsets S-Boot's DTB lands on (boot-ios37)
 
 
 def parse_macho(buf):
@@ -185,11 +186,20 @@ def build(kernel_path, adt_path, cmdline, ramdisk_path=None, blobs=()):
     hdr_size = SEG_TABLE + 32 * len(pieces)
     out = bytearray(hdr_size)
     seg_table = []
+
+    def skip_dtb_hole(size):
+        """Keep [DTB_HOLE) free: on the Exynos S-Boot loads the payload at 0x89000000
+        and then writes the DTB (fixups included) to 0x8a000000, 16 MB into it."""
+        if len(out) < DTB_HOLE[1] and len(out) + size > DTB_HOLE[0]:
+            out.extend(b'\0' * (DTB_HOLE[1] - len(out)))
+
     for vmaddr, vmsize, data in pieces:
+        skip_dtb_hole(len(data))
         off = len(out)
         out += data
         out += b'\0' * (-len(out) & 0xf)
         seg_table.append((vmaddr, vmsize, off, len(data)))
+    skip_dtb_hole(len(adt_blob))
     adt_off = len(out)
     out += adt_blob
     out += b'\0' * (-len(out) & 0xf)
