@@ -1,0 +1,52 @@
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index db839ab..f2f58d9 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -1025,6 +1025,7 @@ sweet_ufs_strategy(buf_t bp)
+ 	uint64_t part_bytes = su.nblocks * UFS_BLOCK;
+ 
+ 	bool rd = buf_flags(bp) & B_READ;
++	bool user;
+ 
+ 	buf_setresid(bp, count);
+ 	if (!rd && !su.writable) {
+@@ -1042,6 +1043,11 @@ sweet_ufs_strategy(buf_t bp)
+ 		error = EIO;
+ 		goto done;
+ 	}
++	/*
++	 * /dev/rufsroot0: physio passes the caller's own user address (wired by
++	 * vslock) and PAN faults a plain memcpy. Kernel addresses have bit 63 set.
++	 */
++	user = (buf_flags(bp) & B_PHYS) && !((uintptr_t)vaddr >> 63);
+ 
+ 	lck_mtx_lock(&sweet_ufs_lock);
+ 	for (uint32_t done = 0; done < count;) {
+@@ -1054,7 +1060,11 @@ sweet_ufs_strategy(buf_t bp)
+ 		if (rd) {
+ 			error = ufs_read_blocks(su.first_block + lba, blocks);
+ 			if (!error) {
+-				memcpy(vaddr + done, (const char *)bounce + skip, want);
++				if (user) {
++					error = copyout((const char *)bounce + skip, (user_addr_t)(uintptr_t)(vaddr + done), want);
++				} else {
++					memcpy(vaddr + done, (const char *)bounce + skip, want);
++				}
+ 			}
+ 		} else {
+ 			/* Partial device blocks at either end: read, merge, write back. */
+@@ -1062,7 +1072,13 @@ sweet_ufs_strategy(buf_t bp)
+ 				error = ufs_read_blocks(su.first_block + lba, blocks);
+ 			}
+ 			if (!error) {
+-				memcpy((char *)bounce + skip, vaddr + done, want);
++				if (user) {
++					error = copyin((user_addr_t)(uintptr_t)(vaddr + done), (char *)bounce + skip, want);
++				} else {
++					memcpy((char *)bounce + skip, vaddr + done, want);
++				}
++			}
++			if (!error) {
+ 				error = ufs_write_blocks(su.first_block + lba, blocks);
+ 			}
+ 		}
