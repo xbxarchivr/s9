@@ -9,9 +9,11 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <mach/mach.h>
 #include <mach/mach_time.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 typedef mach_port_t io_object_t;
 typedef io_object_t io_service_t;
@@ -33,7 +35,11 @@ extern kern_return_t IOConnectMapMemory64(io_connect_t connect, uint32_t memoryT
 #define SEL_FREE        3
 #define JOB_SLOT        1
 #define MAGIC           0xc0ffee42u
-#define RUNS            1000
+#define RUNS            200
+#define M_SETTLE        1u      /* read the job back and wait before submitting */
+#define M_LATE          2u      /* wait before reading the target */
+#define M_NEWJOB        4u      /* a job descriptor page never used before */
+#define M_NEWTARGET     8u      /* a target page never used before */
 
 static io_connect_t conn;
 static volatile uint8_t *mem;
@@ -73,6 +79,62 @@ submit(uint32_t job, uint64_t *r)
 	/* an error reply carries no outputs: the kernel log has them */
 	memset(r, 0, 6 * sizeof(*r));
 	return IOConnectCallScalarMethod(conn, SEL_SUBMIT, in, 2, r, &n);
+}
+
+/*
+ * Repeat jobs fail on the G72 (boot-ios48): status 0x58 or the previous run's
+ * value in the target. Each mode changes one thing, to tell what they depend on.
+ */
+static int
+run_mode(const char *name, uint32_t job, uint32_t target, unsigned mode)
+{
+	static uint32_t value = MAGIC;
+	uint64_t r[6];
+	int rejected = 0, wrong = 0, late = 0, shown = 0;
+	mach_timebase_info_data_t tb;
+	mach_timebase_info(&tb);
+	uint64_t t0 = mach_absolute_time();
+	for (uint32_t i = 0; i < RUNS; i++) {
+		uint32_t want = ++value;
+		if ((mode & M_NEWJOB) && (job = gpu_alloc(4096)) == 0) {
+			return 1;
+		}
+		if ((mode & M_NEWTARGET) && (target = gpu_alloc(4096)) == 0) {
+			return 1;
+		}
+		volatile uint32_t *j = (volatile uint32_t *)(mem + (job - base));
+		volatile uint32_t *t = (volatile uint32_t *)(mem + (target - base));
+		job_write(j, target, want);
+		if (mode & M_SETTLE) {
+			(void)j[12];
+			__asm__ volatile("dsb sy" ::: "memory");
+			usleep(1000);
+		}
+		kern_return_t kr = submit(job, r);
+		if (mode & M_LATE) {
+			usleep(1000);
+		}
+		uint32_t got = t[0], ex = j[0];
+		bool fail = kr != KERN_SUCCESS || got != want;
+		if (kr != KERN_SUCCESS) {
+			rejected++;
+		} else if (got != want) {
+			wrong++;
+			usleep(1000);
+			if (t[0] == want) {
+				late++;
+			}
+		}
+		if (fail && shown < 4) {
+			shown++;
+			printf("  run %u: kr %#x want %#x got %#x (want-1: %d) exception %#x word1 %#x\n",
+			    i, kr, want, got, got == want - 1, ex, j[1]);
+		}
+	}
+	uint64_t ns = (mach_absolute_time() - t0) * tb.numer / tb.denom;
+	printf("%s: %d runs, %d rejected, %d wrong value (%d right 1 ms later), %llu us per run\n",
+	    name, RUNS, rejected, wrong, late, ns / 1000 / RUNS);
+	return rejected + wrong != 0;
 }
 
 int
@@ -127,25 +189,13 @@ main(void)
 		return 1;
 	}
 
-	/* a new value each run, so a stale read cannot pass */
-	mach_timebase_info_data_t tb;
-	mach_timebase_info(&tb);
-	uint64_t t0 = mach_absolute_time();
 	int bad = 0;
-	uint32_t ran = 0;
-	for (uint32_t i = 0; i < RUNS; i++) {
-		ran++;
-		job_write(j, target, i ^ MAGIC);
-		kr = submit(job, r);
-		if (kr != KERN_SUCCESS || t[0] != (i ^ MAGIC)) {
-			printf("run %u: kr %#x target %#x; raw %#llx status %#llx mmu %#llx\n", i, kr, t[0], r[0], r[1], r[2]);
-			if (++bad == 5) {
-				break;
-			}
-		}
-	}
-	uint64_t ns = (mach_absolute_time() - t0) * tb.numer / tb.denom;
-	printf("%u jobs, %d bad, %llu us per job\n", ran, bad, ns / 1000 / ran);
+	bad += run_mode("reuse job and target", job, target, 0);
+	bad += run_mode("read back + 1 ms before submit", job, target, M_SETTLE);
+	bad += run_mode("1 ms before reading target", job, target, M_LATE);
+	bad += run_mode("new job page each run", job, target, M_NEWJOB);
+	bad += run_mode("new target page each run", job, target, M_NEWTARGET);
+	bad += run_mode("new job and target pages", job, target, M_NEWJOB | M_NEWTARGET);
 
 	IOConnectCallScalarMethod(conn, SEL_FREE, NULL, 0, NULL, NULL);
 	IOServiceClose(conn);
