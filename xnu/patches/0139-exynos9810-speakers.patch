@@ -1,0 +1,340 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 93e4dd0..775e228 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -776,6 +776,28 @@ stop:
+ 	return err;
+ }
+ 
++/* one byte to a 16-bit register; 0, -1 NACK, -2 clock stuck */
++static int
++ai2c_write16(const struct apin *sda, const struct apin *scl, uint8_t addr, uint16_t reg, uint8_t val)
++{
++	int err;
++	ai2c_line(sda, true);
++	if (!ai2c_scl_high(scl)) {
++		return -2;
++	}
++	ai2c_line(sda, false);                  /* START */
++	ai2c_line(scl, false);
++	if (!(err = ai2c_byte(sda, scl, (uint8_t)(addr << 1))) &&
++	    !(err = ai2c_byte(sda, scl, (uint8_t)(reg >> 8))) &&
++	    !(err = ai2c_byte(sda, scl, (uint8_t)reg))) {
++		err = ai2c_byte(sda, scl, val);
++	}
++	ai2c_line(sda, false);
++	(void)ai2c_scl_high(scl);
++	ai2c_line(sda, true);
++	return err;
++}
++
+ /* SPI mode 0, MSB first: n bits out on MOSI, the bits seen on MISO returned */
+ static uint32_t
+ aspi_bits(const struct apin *clk, const struct apin *mosi, const struct apin *miso, uint32_t out, unsigned n)
+@@ -1715,9 +1737,133 @@ abox_sine(int x, int amp)
+ 	return neg ? -v : v;
+ }
+ 
++/* CS47L93 for AIF1 playback; returns the CLKOUT0 value to restore */
++static uint32_t
++abox_codec_up(const struct aspi *b, vm_offset_t pmu)
++{
++	/* the codec: as stage 2, then ASYNCCLK from FLL2 locked to the AIF1 bit clock (DT cirrus,asyncclk) */
++	uint32_t ck = touch_rd(pmu, EXY_PMU_CLKOUT0);
++	touch_wr(pmu, EXY_PMU_CLKOUT0, (ck & ~(0x3fu << 8) & ~1u) | 1u << 8);
++	delay(1000);
++	for (int i = 0; i < 100 && !(madera_rd(b, MADERA_R_IRQ1_RAW1) & 0x80); i++) {
++		delay(1000);
++	}
++	for (unsigned i = 0; i < sizeof(cs47l92_reva_16_patch) / sizeof(cs47l92_reva_16_patch[0]); i++) {
++		madera_wr(b, cs47l92_reva_16_patch[i][0], cs47l92_reva_16_patch[i][1]);
++	}
++	madera_wr(b, MADERA_R_SYSCLK1, 2u << 8 | 0x40);
++	madera_wr(b, MADERA_R_SAMPLE_RATE1, 0x03);
++	/* AIF1 pins: pinctrl-cs47l92 aif1 = GPIO5-8, alternate function 0 */
++	for (uint32_t g = 0x1708; g <= 0x170e; g += 2) {
++		madera_wr(b, g, madera_rd(b, g) & ~0x3ffu);
++	}
++	/* FLL2: 1.536 MHz AIF1BCLK (src 8) -> 98.304 MHz; madera_calc_fll: FRATIO 1, N 64, integer, gain 3 */
++	madera_wr(b, 0x193, 0);
++	madera_wr(b, 0x194, 0);
++	madera_wr(b, 0x195, 0);
++	madera_wr(b, 0x196, 8);
++	madera_wr(b, 0x199, (madera_rd(b, 0x199) & ~0x3cu) | 3u << 2);
++	madera_wr(b, 0x19a, (madera_rd(b, 0x19a) & ~0xf800u) | 1u << 11 | 2u << 12);
++	madera_wr(b, 0x192, 0x8000u | 64);
++	madera_wr(b, 0x191, madera_rd(b, 0x191) | 1);
++	int lock = -1;
++	for (int i = 0; i < 100; i++) {
++		if (madera_rd(b, 0x1881) & 0x200) {             /* FLL2_LOCK_STS1 */
++			lock = i;
++			break;
++		}
++		delay(1000);
++	}
++	printf("SWEET AUDIO: FLL2 lock after %d ms, raw status %#x\n", lock, madera_rd(b, 0x1881));
++	madera_wr(b, 0x112, 4u << 8 | 0x40 | 5);        /* ASYNCCLK: FLL2, 98.304 MHz, enabled */
++	madera_wr(b, 0x113, 3);                         /* ASYNC_SAMPLE_RATE_1 48 kHz */
++	madera_wr(b, 0x408, (madera_rd(b, 0x408) & ~0xf800u) | 8u << 11);       /* OUT rate: ASYNC 1 */
++	/* AIF1 slave, I2S, on ASYNC rate 1: BCLK_FREQ 11 = 1.536 MHz, 32 BCLK per frame, 16 bit slots */
++	madera_wr(b, 0x500, 11);
++	madera_wr(b, 0x503, 8u << 11);
++	madera_wr(b, 0x504, 2);
++	madera_wr(b, 0x506, 32);
++	madera_wr(b, 0x507, 0x1010);
++	madera_wr(b, 0x508, 0x1010);
++	madera_wr(b, 0x51a, 3);
++	/* HPOUT2 from AIF1RX1/2: mixer 0 dB, DAC -16 dB, about -34 dBFS with the tone (stage 2 was -36) */
++	madera_wr(b, MADERA_R_OUT2LMIX_SRC1, 0x20);
++	madera_wr(b, MADERA_R_OUT2LMIX_VOL1, 0x40u << 1);
++	madera_wr(b, MADERA_R_OUT2RMIX_SRC1, 0x21);
++	madera_wr(b, MADERA_R_OUT2RMIX_VOL1, 0x40u << 1);
++	madera_wr(b, MADERA_R_DAC_VOL2L, 0x60);
++	madera_wr(b, MADERA_R_DAC_VOL2R, 0x0200 | 0x60);
++	madera_wr(b, MADERA_R_OUT_PATH2L, madera_rd(b, MADERA_R_OUT_PATH2L) & ~0x1000u);
++	madera_wr(b, MADERA_R_OUT_ENABLES1, madera_rd(b, MADERA_R_OUT_ENABLES1) | 0x000c);
++	delay(40000);
++	return ck;
++}
++
++/*
++ * The two MAX98512 on GPP4-4 (SCL) / GPP4-5 (SDA): 0x39 left, 0x3a right (DT
++ * mono_stereo, sub_reg). rev 0x41 reads at 0x402, 0x600 is 0: the classic
++ * register map, not MAX98512B. Values from max98512_probe and hw_params,
++ * I2S slave, 16 bit, 48 kHz, BSEL 2 (32 BCLK per frame), RX channel 0 / 1.
++ * Deliberately quiet: no Samsung DSM speaker protection on this path, so
++ * digital gain -8 dB (0x20; 0x40 = 0 dB) and SPK_GAIN 1 instead of DT's 5.
++ */
++static void
++abox_amps(vm_offset_t p1, bool on)
++{
++	struct apin scl = {p1, EXY_GPP4, 4}, sda = {p1, EXY_GPP4, 5};
++	uint32_t c4 = touch_rd(p1, EXY_GPP4), d4 = touch_rd(p1, EXY_GPP4 + 4), u4 = touch_rd(p1, EXY_GPP4 + 8);
++	touch_wr(p1, EXY_GPP4 + 8, u4 & ~(0xfu << 16 | 0xfu << 20));
++	apin_con(&scl, 0);
++	apin_con(&sda, 0);
++	delay(20);
++	static const uint8_t addrs[2] = { MAX98512_ADDR, 0x3a };
++	for (int a = 0; a < 2; a++) {
++		uint8_t ad = addrs[a];
++		if (!on) {
++			(void)ai2c_write16(&sda, &scl, ad, 0x0038, 0);
++			(void)ai2c_write16(&sda, &scl, ad, 0x0400, 0);
++			continue;
++		}
++		static const uint16_t init[][2] = {
++			{0x0401, 0x01}, {0x0400, 0x00}, {0x003c, 0x00}, {0x001c, 0xff}, {0x001d, 0xff},
++			{0x0035, 0x20}, {0x003a, 0x01}, {0x0036, 0x01},
++			{0x003e, 0x1c}, {0x0040, 0x3e}, {0x003f, 0x01},
++			{0x0086, 0x05}, {0x0087, 0x02}, {0x0088, 0x01}, {0x0011, 0x00},
++			{0x0021, 0x00}, {0x0022, 0x22}, {0x0020, 0x40}, {0x0023, 0x08}, {0x0024, 0x88},
++			{0x0034, 0x00}, {0x0039, 0x00},
++		};
++		int err = 0, n = 0;
++		for (unsigned i = 0; i < sizeof(init) / sizeof(init[0]); i++) {
++			int e = ai2c_write16(&sda, &scl, ad, init[i][0], (uint8_t)init[i][1]);
++			if (e) {
++				err = e;
++				n++;
++			}
++			if (i == 0) {
++				delay(10000);   /* after SOFT_RESET */
++			}
++		}
++		n += ai2c_write16(&sda, &scl, ad, 0x0018, a ? 0x02 : 0x01) != 0;
++		n += ai2c_write16(&sda, &scl, ad, 0x0025, a ? 0x41 : 0x00) != 0;
++		n += ai2c_write16(&sda, &scl, ad, 0x0026, a ? 0x01 : 0x00) != 0;
++		n += ai2c_write16(&sda, &scl, ad, 0x0038, 1) != 0;
++		n += ai2c_write16(&sda, &scl, ad, 0x0400, 1) != 0;
++		delay(5000);
++		printf("SWEET AUDIO: amp %#x: %d failed writes (last %d); EN %d SHDN %d VOL %d GAIN %d MODE %d SR %d\n", ad, n, err,
++		    ai2c_read16(&sda, &scl, ad, 0x0038), ai2c_read16(&sda, &scl, ad, 0x0400),
++		    ai2c_read16(&sda, &scl, ad, 0x0035), ai2c_read16(&sda, &scl, ad, 0x003a),
++		    ai2c_read16(&sda, &scl, ad, 0x0020), ai2c_read16(&sda, &scl, ad, 0x0023));
++	}
++	touch_wr(p1, EXY_GPP4 + 4, d4);
++	touch_wr(p1, EXY_GPP4 + 8, u4);
++	touch_wr(p1, EXY_GPP4, c4);
++}
++
+ static void
+-exy_abox_play(const struct aspi *b)
++exy_abox_play(const struct aspi *b, vm_offset_t p1, bool spk)
+ {
++	const uint32_t u = spk ? 1 : 0;         /* UAIF0 = codec, UAIF1 = speaker amps */
++	const uint32_t uc0 = 0x500 + 0x10 * u, uc1 = uc0 + 4;
+ 	const uint32_t id = 0, frames = 48000, period = 4800, periods = 40;     /* 1 s ring, 25 ms periods */
+ 	uint32_t secs = 5;
+ 	(void)PE_parse_boot_argn("sweetaudiotone", &secs, sizeof(secs));
+@@ -1761,28 +1907,34 @@ exy_abox_play(const struct aspi *b)
+ 	/* route: SPUS OUT0 = SIFS0 (bits 2:1 = 1, ASRC off), MIXP 16 bit stereo, UAIF0 SPK = SIFS0 */
+ 	touch_wr(sfr, 0x200, (touch_rd(sfr, 0x200) & ~0xfu) | (1u << 1));
+ 	touch_wr(sfr, 0x204, (touch_rd(sfr, 0x204) & ~0x1fu) | 9u);
+-	touch_wr(sfr, 0x40, (touch_rd(sfr, 0x40) & ~0xfu) | 1u);
++	touch_wr(sfr, 0x40, (touch_rd(sfr, 0x40) & ~(0xfu << (4 * u))) | 1u << (4 * u));
+ 
+-	/* UAIF0 pins: gpb0-1..4 function 2 (DT aud-i2s0-bus) */
+-	uint32_t pc = abox_sp(gpio);
+-	touch_wr(gpio, 0, (pc & ~0x000ffff0u) | 0x00022220u);
++	/* pins, DT aud-i2s0-bus gpb0-1..4 / aud-i2s1-bus gpb1-0..3, function 2 */
++	uint32_t pc = abox_sp(gpio + (spk ? 0x20 : 0));
++	if (spk) {
++		touch_wr(gpio, 0x20, (pc & ~0x0000ffffu) | 0x00002222u);
++	} else {
++		touch_wr(gpio, 0, (pc & ~0x000ffff0u) | 0x00022220u);
++	}
+ 	/* UAIF0 bit clock: AUDIF 24.576 MHz / 16 = 1.536 MHz (48k * 16 * 2), run from the divider */
+ 	printf("SWEET ABOX: CMU audif div %#x uaif0 div %#x mux %#x gate %#x/%#x qch %#x; gpb0 con %#x -> %#x\n",
+ 	    touch_rd(cmu, 0x1800), touch_rd(cmu, 0x1824), touch_rd(cmu, 0x1004), touch_rd(cmu, 0x201c),
+-	    touch_rd(cmu, 0x2090), touch_rd(cmu, 0x3028), pc, abox_sp(gpio));
++	    touch_rd(cmu, 0x2090), touch_rd(cmu, 0x3028), pc, abox_sp(gpio + (spk ? 0x20 : 0)));
+ 	touch_wr(cmu, 0x1800, (touch_rd(cmu, 0x1800) & ~0x1ffu) | 47u);
+-	touch_wr(cmu, 0x1824, (touch_rd(cmu, 0x1824) & ~0x1ffu) | 15u);
+-	touch_wr(cmu, 0x1004, touch_rd(cmu, 0x1004) & ~1u);
+-	touch_wr(cmu, 0x201c, touch_rd(cmu, 0x201c) | 3u << 20);        /* MANUAL | CG_VAL */
+-	touch_wr(cmu, 0x2090, touch_rd(cmu, 0x2090) | 3u << 20);
++	const uint32_t cdiv = spk ? 0x1828 : 0x1824, cmux = spk ? 0x1008 : 0x1004;
++	const uint32_t cg0 = spk ? 0x2020 : 0x201c, cg1 = spk ? 0x2094 : 0x2090;
++	touch_wr(cmu, cdiv, (touch_rd(cmu, cdiv) & ~0x1ffu) | 15u);
++	touch_wr(cmu, cmux, touch_rd(cmu, cmux) & ~1u);
++	touch_wr(cmu, cg0, touch_rd(cmu, cg0) | 3u << 20);              /* MANUAL | CG_VAL */
++	touch_wr(cmu, cg1, touch_rd(cmu, cg1) | 3u << 20);
+ 	delay(100);
+ 	/* UAIF0 master, I2S, 16 bit stereo: FORMAT 9, BCLK_POLARITY, SLOT_MAX 1, SBIT_MAX 15 */
+-	touch_wr(sfr, 0x504, 9u << 24 | 1u << 23 | 1u << 18 | 15u << 12);
+-	touch_wr(sfr, 0x500, touch_rd(sfr, 0x500) | 1u << 2);
++	touch_wr(sfr, uc1, 9u << 24 | 1u << 23 | 1u << 18 | 15u << 12);
++	touch_wr(sfr, uc0, touch_rd(sfr, uc0) | 1u << 2);
+ 	/* set_tristate(0): keep the UAIF0 bit clock running (ABOX_BCLK_UAIF0 = bit 2) */
+-	touch_wr(sfr, 0x38, touch_rd(sfr, 0x38) | 1u << 2);
++	touch_wr(sfr, 0x38, touch_rd(sfr, 0x38) | 1u << (2 + u));
+ 	printf("SWEET ABOX: route ctrl0 %#x spus %#x %#x uaif0 %#x %#x qdis %#x\n", touch_rd(sfr, 0x40),
+-	    touch_rd(sfr, 0x200), touch_rd(sfr, 0x204), touch_rd(sfr, 0x500), touch_rd(sfr, 0x504), touch_rd(sfr, 0x38));
++	    touch_rd(sfr, 0x200), touch_rd(sfr, 0x204), touch_rd(sfr, uc0), touch_rd(sfr, uc1), touch_rd(sfr, 0x38));
+ 
+ 	/* Calliope's PCM task, abox_rdma_open/hw_params/prepare */
+ 	abox_pcm(sram, gic, id, 11, 0, 0, 0);                           /* PCM_PLTDAI_OPEN */
+@@ -1790,66 +1942,17 @@ exy_abox_play(const struct aspi *b)
+ 	abox_pcm(sram, gic, id, 14, 48000, 16, 2);                      /* PCM_PLTDAI_HW_PARAMS */
+ 	abox_pcm(sram, gic, id, 16, 0, 0, 0);                           /* PCM_PLTDAI_PREPARE */
+ 
+-	/* the codec: as stage 2, then ASYNCCLK from FLL2 locked to the AIF1 bit clock (DT cirrus,asyncclk) */
+-	uint32_t ck = touch_rd(pmu, EXY_PMU_CLKOUT0);
+-	touch_wr(pmu, EXY_PMU_CLKOUT0, (ck & ~(0x3fu << 8) & ~1u) | 1u << 8);
+-	delay(1000);
+-	for (int i = 0; i < 100 && !(madera_rd(b, MADERA_R_IRQ1_RAW1) & 0x80); i++) {
+-		delay(1000);
+-	}
+-	for (unsigned i = 0; i < sizeof(cs47l92_reva_16_patch) / sizeof(cs47l92_reva_16_patch[0]); i++) {
+-		madera_wr(b, cs47l92_reva_16_patch[i][0], cs47l92_reva_16_patch[i][1]);
+-	}
+-	madera_wr(b, MADERA_R_SYSCLK1, 2u << 8 | 0x40);
+-	madera_wr(b, MADERA_R_SAMPLE_RATE1, 0x03);
+-	/* AIF1 pins: pinctrl-cs47l92 aif1 = GPIO5-8, alternate function 0 */
+-	for (uint32_t g = 0x1708; g <= 0x170e; g += 2) {
+-		madera_wr(b, g, madera_rd(b, g) & ~0x3ffu);
+-	}
+-	/* FLL2: 1.536 MHz AIF1BCLK (src 8) -> 98.304 MHz; madera_calc_fll: FRATIO 1, N 64, integer, gain 3 */
+-	madera_wr(b, 0x193, 0);
+-	madera_wr(b, 0x194, 0);
+-	madera_wr(b, 0x195, 0);
+-	madera_wr(b, 0x196, 8);
+-	madera_wr(b, 0x199, (madera_rd(b, 0x199) & ~0x3cu) | 3u << 2);
+-	madera_wr(b, 0x19a, (madera_rd(b, 0x19a) & ~0xf800u) | 1u << 11 | 2u << 12);
+-	madera_wr(b, 0x192, 0x8000u | 64);
+-	madera_wr(b, 0x191, madera_rd(b, 0x191) | 1);
+-	int lock = -1;
+-	for (int i = 0; i < 100; i++) {
+-		if (madera_rd(b, 0x1881) & 0x200) {             /* FLL2_LOCK_STS1 */
+-			lock = i;
+-			break;
+-		}
+-		delay(1000);
++	uint32_t ck = 0;
++	if (spk) {
++		abox_amps(p1, true);
++	} else {
++		ck = abox_codec_up(b, pmu);
+ 	}
+-	printf("SWEET AUDIO: FLL2 lock after %d ms, raw status %#x\n", lock, madera_rd(b, 0x1881));
+-	madera_wr(b, 0x112, 4u << 8 | 0x40 | 5);        /* ASYNCCLK: FLL2, 98.304 MHz, enabled */
+-	madera_wr(b, 0x113, 3);                         /* ASYNC_SAMPLE_RATE_1 48 kHz */
+-	madera_wr(b, 0x408, (madera_rd(b, 0x408) & ~0xf800u) | 8u << 11);       /* OUT rate: ASYNC 1 */
+-	/* AIF1 slave, I2S, on ASYNC rate 1: BCLK_FREQ 11 = 1.536 MHz, 32 BCLK per frame, 16 bit slots */
+-	madera_wr(b, 0x500, 11);
+-	madera_wr(b, 0x503, 8u << 11);
+-	madera_wr(b, 0x504, 2);
+-	madera_wr(b, 0x506, 32);
+-	madera_wr(b, 0x507, 0x1010);
+-	madera_wr(b, 0x508, 0x1010);
+-	madera_wr(b, 0x51a, 3);
+-	/* HPOUT2 from AIF1RX1/2: mixer 0 dB, DAC -16 dB, about -34 dBFS with the tone (stage 2 was -36) */
+-	madera_wr(b, MADERA_R_OUT2LMIX_SRC1, 0x20);
+-	madera_wr(b, MADERA_R_OUT2LMIX_VOL1, 0x40u << 1);
+-	madera_wr(b, MADERA_R_OUT2RMIX_SRC1, 0x21);
+-	madera_wr(b, MADERA_R_OUT2RMIX_VOL1, 0x40u << 1);
+-	madera_wr(b, MADERA_R_DAC_VOL2L, 0x60);
+-	madera_wr(b, MADERA_R_DAC_VOL2R, 0x0200 | 0x60);
+-	madera_wr(b, MADERA_R_OUT_PATH2L, madera_rd(b, MADERA_R_OUT_PATH2L) & ~0x1000u);
+-	madera_wr(b, MADERA_R_OUT_ENABLES1, madera_rd(b, MADERA_R_OUT_ENABLES1) | 0x000c);
+-	delay(40000);
+ 
+ 	/* go: abox_rdma_trigger, abox_uaif_trigger */
+ 	abox_rx_lines = 0;
+ 	abox_pcm(sram, gic, id, 17, 1, 0, 0);
+-	touch_wr(sfr, 0x500, touch_rd(sfr, 0x500) | 1u);
++	touch_wr(sfr, uc0, touch_rd(sfr, uc0) | 1u);
+ 	printf("SWEET ABOX: playing %u s: RDMA0 %#x %#x %#x %#x\n", secs, abox_sp(sfr + 0x1000), abox_sp(sfr + 0x1004),
+ 	    abox_sp(sfr + 0x1008), abox_sp(sfr + 0x100c));
+ 	for (uint32_t t = 0; t < secs * 100; t++) {
+@@ -1857,21 +1960,27 @@ exy_abox_play(const struct aspi *b)
+ 		if (t % 100 == 50) {
+ 			printf("SWEET ABOX: t %u ms: pc %#x RDMA0 %#x %#x %#x %#x uaif0 %#x, codec raw %#x %#x\n",
+ 			    t * 10, abox_sp(sfr + 0x2c3c), abox_sp(sfr + 0x1000), abox_sp(sfr + 0x1004), abox_sp(sfr + 0x1008),
+-			    abox_sp(sfr + 0x100c), abox_sp(sfr + 0x500), madera_rd(b, MADERA_R_IRQ1_RAW1),
+-			    madera_rd(b, 0x1881));
++			    abox_sp(sfr + 0x100c), abox_sp(sfr + uc0), spk ? 0 : madera_rd(b, MADERA_R_IRQ1_RAW1),
++			    spk ? 0 : madera_rd(b, 0x1881));
+ 		}
+ 		touch_wait(10);
+ 	}
+ 
+ 	abox_pcm(sram, gic, id, 17, 0, 0, 0);
+-	madera_wr(b, MADERA_R_OUT_ENABLES1, madera_rd(b, MADERA_R_OUT_ENABLES1) & ~0x000cu);
+-	touch_wr(sfr, 0x500, touch_rd(sfr, 0x500) & ~1u);
++	if (spk) {
++		abox_amps(p1, false);
++	} else {
++		madera_wr(b, MADERA_R_OUT_ENABLES1, madera_rd(b, MADERA_R_OUT_ENABLES1) & ~0x000cu);
++	}
++	touch_wr(sfr, uc0, touch_rd(sfr, uc0) & ~1u);
+ 	abox_pcm(sram, gic, id, 15, 0, 0, 0);                   /* PCM_PLTDAI_HW_FREE */
+ 	abox_pcm(sram, gic, id, 12, 0, 0, 0);                   /* PCM_PLTDAI_CLOSE */
+-	madera_wr(b, 0x191, madera_rd(b, 0x191) & ~1u);
+-	madera_wr(b, 0x112, 4u << 8 | 5);
+-	madera_wr(b, MADERA_R_SYSCLK1, 2u << 8);
+-	touch_wr(pmu, EXY_PMU_CLKOUT0, ck);
++	if (!spk) {
++		madera_wr(b, 0x191, madera_rd(b, 0x191) & ~1u);
++		madera_wr(b, 0x112, 4u << 8 | 5);
++		madera_wr(b, MADERA_R_SYSCLK1, 2u << 8);
++		touch_wr(pmu, EXY_PMU_CLKOUT0, ck);
++	}
+ 	printf("SWEET ABOX: play done\n");
+ }
+ 
+@@ -1963,11 +2072,11 @@ exy_audio_probe(void)
+ 	if (on == 3) {
+ 		exy_abox_probe();
+ 	}
+-	if (on == 4 || on == 5) {
++	if (on >= 4 && on <= 6) {
+ 		exy_abox_boot();
+ 	}
+-	if (on == 5 && abox_ready && id == 0x6371) {
+-		exy_abox_play(&bus);
++	if ((on == 5 || on == 6) && abox_ready && id == 0x6371) {
++		exy_abox_play(&bus, p1, on == 6);       /* 5 headphones, 6 speakers */
+ 	}
+ 	touch_wr(p0, EXY_GPP0 + 4, d0);
+ 	touch_wr(p0, EXY_GPP0, c0);
