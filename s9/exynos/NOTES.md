@@ -1251,3 +1251,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 
 - **0143 compiled** (run 41118320342, success): `out/exynos/xnu38/kernel.development.sweet` sha256 fca8bdbd... **Boot image `out/exynos/boot-ios44.img`** (sha256 383b5645...) = sweetgpu=3, no audio. Not flashed. Fallback: boot-ios43 / boot-ios40.
 
+- **boot-ios44 flashed** to BOOT (sda10), readback sha256 383b5645... matches. Rebooted. Fallback boot-ios43 / boot-ios40.
+
