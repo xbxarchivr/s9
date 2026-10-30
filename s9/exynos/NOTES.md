@@ -1233,3 +1233,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 
 - **0141 compiled** (run 41111876459, success): `out/exynos/xnu36/kernel.development.sweet` sha256 134c5363... **Boot image `out/exynos/boot-ios42.img`** (sha256 c840c764...) = sweetaudio=6 + all blobs. Not flashed. Fallback: boot-ios41 / boot-ios40.
 
+- **boot-ios42 flashed** to BOOT (sda10), readback sha256 c840c764... matches. Rebooted. Fallback boot-ios41 / boot-ios40.
+
