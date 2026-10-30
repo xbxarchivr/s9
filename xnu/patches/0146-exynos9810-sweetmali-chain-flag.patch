@@ -1,0 +1,59 @@
+diff --git a/iokit/Kernel/arm/SweetMali.cpp b/iokit/Kernel/arm/SweetMali.cpp
+index 961816b..4d1aec4 100644
+--- a/iokit/Kernel/arm/SweetMali.cpp
++++ b/iokit/Kernel/arm/SweetMali.cpp
+@@ -55,10 +55,12 @@
+ #define L2_PWROFF       0x1e0
+ #define JOB_RAW         0x1000
+ #define JOB_CLEAR       0x1004
++#define JOB_JS_STATE    0x1010
+ #define JS(n, off)      (0x1800 + (n) * 0x80 + (off))
+ #define JS_HEAD         0x00
+ #define JS_COMMAND      0x20
+ #define JS_STATUS       0x24
++#define JS_CONFIG_CUR   0x18
+ #define JS_HEAD_NEXT    0x40
+ #define JS_AFFIN_NEXT   0x50
+ #define JS_CONFIG_NEXT  0x58
+@@ -81,6 +83,7 @@
+ #define AS_MEMATTR      0x4c4c4c4cu
+ /* panfrost_job_hw_submit: AS 0, priority 8, clean + invalidate at both ends */
+ #define JS_CONFIG       (8u << 16 | 3u << 8 | 3u << 12)
++#define JS_CHAIN_FLAG   (1u << 11)
+ 
+ struct SweetMaliResult {
+ 	uint32_t raw, status, head, mmuRaw, asFault, asAddr, gpuFault;
+@@ -96,6 +99,7 @@ class SweetMali : public IOService {
+ 	IOLock *fLock;
+ 	uint32_t fNext, fShaders, fTiler, fL2, fId;
+ 	bool fPowered;
++	bool fChainFlag[3];
+ 
+ 	uint32_t rd(uint32_t off) const
+ 	{
+@@ -252,11 +256,14 @@ SweetMali::submit(uint64_t jc, uint32_t slot, SweetMaliResult *r)
+ 	__asm__ volatile("dsb sy" ::: "memory");
+ 	wr(JOB_CLEAR, 0xffffffffu);
+ 	wr(MMU_CLEAR, 0xffffffffu);
++	(void)poll(JS(slot, JS_CMD_NEXT), 0, 0xffffffffu, 1000);
+ 	wr(JS(slot, JS_HEAD_NEXT), (uint32_t)jc);
+ 	wr(JS(slot, JS_HEAD_NEXT) + 4, (uint32_t)(jc >> 32));
+ 	wr(JS(slot, JS_AFFIN_NEXT), fShaders);
+ 	wr(JS(slot, JS_AFFIN_NEXT) + 4, 0);
+-	wr(JS(slot, JS_CONFIG_NEXT), JS_CONFIG);
++	/* job chain disambiguation: consecutive jobs on a slot differ in this bit */
++	wr(JS(slot, JS_CONFIG_NEXT), JS_CONFIG | (fChainFlag[slot] ? JS_CHAIN_FLAG : 0));
++	fChainFlag[slot] = !fChainFlag[slot];
+ 	wr(JS(slot, JS_CMD_NEXT), 1);   /* START */
+ 	/* done or failed on this slot; a GPU page fault stalls it without either */
+ 	const uint32_t bits = (1u << slot) | (1u << (16 + slot));
+@@ -276,6 +283,9 @@ SweetMali::submit(uint64_t jc, uint32_t slot, SweetMaliResult *r)
+ 	r->asAddr = rd(AS0_FAULTADDR);
+ 	r->gpuFault = rd(GPU_FAULT);
+ 	if (!r->finished) {
++		printf("SWEET MALI: job %#llx slot %u stuck: raw %#x js_state %#x status %#x head %#x cmd_next %#x head_next %#x config %#x mmu %#x fault %#x addr %#x gpu %#x\n",
++		    jc, slot, r->raw, rd(JOB_JS_STATE), r->status, r->head, rd(JS(slot, JS_CMD_NEXT)),
++		    rd(JS(slot, JS_HEAD_NEXT)), rd(JS(slot, JS_CONFIG_CUR)), r->mmuRaw, r->asFault, r->asAddr, r->gpuFault);
+ 		wr(JS(slot, JS_COMMAND), 3);    /* HARD_STOP */
+ 		IOSleep(1);
+ 	}

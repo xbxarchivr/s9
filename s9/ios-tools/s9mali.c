@@ -11,6 +11,7 @@
 #include <mach/mach_time.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 typedef mach_port_t io_object_t;
 typedef io_object_t io_service_t;
@@ -69,6 +70,8 @@ submit(uint32_t job, uint64_t *r)
 {
 	uint64_t in[2] = { job, JOB_SLOT };
 	uint32_t n = 6;
+	/* an error reply carries no outputs: the kernel log has them */
+	memset(r, 0, 6 * sizeof(*r));
 	return IOConnectCallScalarMethod(conn, SEL_SUBMIT, in, 2, r, &n);
 }
 
@@ -129,7 +132,9 @@ main(void)
 	mach_timebase_info(&tb);
 	uint64_t t0 = mach_absolute_time();
 	int bad = 0;
+	uint32_t ran = 0;
 	for (uint32_t i = 0; i < RUNS; i++) {
+		ran++;
 		job_write(j, target, i ^ MAGIC);
 		kr = submit(job, r);
 		if (kr != KERN_SUCCESS || t[0] != (i ^ MAGIC)) {
@@ -140,7 +145,7 @@ main(void)
 		}
 	}
 	uint64_t ns = (mach_absolute_time() - t0) * tb.numer / tb.denom;
-	printf("%d jobs, %d bad, %llu us per job\n", RUNS, bad, ns / 1000 / RUNS);
+	printf("%u jobs, %d bad, %llu us per job\n", ran, bad, ns / 1000 / ran);
 
 	IOConnectCallScalarMethod(conn, SEL_FREE, NULL, 0, NULL, NULL);
 	IOServiceClose(conn);
