@@ -1175,3 +1175,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 
 - **boot-ios36 flashed** to BOOT (sda10), readback sha256 d022a27c... matches. Rebooted. Fallback boot-ios35 / boot-ios25.
 
+- **boot-ios36 RESULT (log s9/logs/boot-ios36.txt, observed): booted to iOS. The remap theory is wrong:** SFR SYSTEM_CONFIG0 0x4444, REMAP_MASK 0xfff00000, REMAP_ADDR 0x17d00000, DYN_CLOCK_OFF 0x7fffffff were already at the 9810 defaults (nothing written). Same fault: data abort DFSR 0x805, PC 0x8004fcbc, **DFAR 0x0a200097** (earlier 0x0a200053/0x67): the low byte changes per boot, so it depends on timing/state, not a fixed bad word.
+
