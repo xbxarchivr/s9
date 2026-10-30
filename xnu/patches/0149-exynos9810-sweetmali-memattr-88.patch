@@ -1,0 +1,149 @@
+diff --git a/iokit/Kernel/arm/SweetMali.cpp b/iokit/Kernel/arm/SweetMali.cpp
+index aa1498a..84c2ac9 100644
+--- a/iokit/Kernel/arm/SweetMali.cpp
++++ b/iokit/Kernel/arm/SweetMali.cpp
+@@ -14,8 +14,7 @@
+  * for CoreAnimation in the end: a real allocator comes with Mesa.
+  *
+  * User client (one at a time): 0 info, 1 alloc, 2 submit and wait, 3 free all,
+- * 4 and 5 for s9mali's experiments; clientMemoryForType maps the 30 MB,
+- * 0 write-combined, 1 uncached.
++ * 4 for s9mali's experiments; clientMemoryForType 0 maps the 30 MB, write-combined.
+  */
+ #include <pexpert/arm64/board_config.h>
+ 
+@@ -89,7 +88,8 @@
+ #define PTE_BLOCK       (1u | 1u << 6 | 2u << 8 | 1u << 10 | 1u << 11)
+ /* panfrost mmu_cfg_init_aarch64_4k, walks non-cacheable; inner/outer NC */
+ #define AS_TRANSCFG     (1u << 24 | 7u << 6 | 6u)
+-#define AS_MEMATTR      0x4c4c4c4cu
++/* implementation-defined cacheable: 0x4c (inner/outer NC) made repeat jobs fail with 0x58, boot-ios50 */
++#define AS_MEMATTR      0x88888888u
+ /* panfrost_job_hw_submit: AS 0, priority 8, clean + invalidate at both ends */
+ #define JS_CONFIG       (8u << 16 | 3u << 8 | 3u << 12)
+ #define JS_CHAIN_FLAG   (1u << 11)
+@@ -109,6 +109,7 @@ class SweetMali : public IOService {
+ 	uint32_t fNext, fShaders, fTiler, fL2, fId;
+ 	bool fPowered;
+ 	bool fChainFlag[3];
++	bool fExplicitFlush;
+ 	uint32_t fTimed, fFailLogged, fMemAttr;
+ 
+ 	uint32_t rd(uint32_t off) const
+@@ -141,8 +142,7 @@ public:
+ 	bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
+ 	bool powerUp(void);
+ 	void powerDown(void);
+-	bool configure(uint32_t memAttr, bool reset);
+-	bool writeJob(uint32_t job, uint32_t target, uint32_t value);
++	bool configure(uint32_t memAttr, bool reset, bool flush);
+ 	uint32_t alloc(uint32_t size);          /* GPU VA, 0 on failure */
+ 	void freeAll(void);
+ 	bool submit(uint64_t jc, uint32_t slot, SweetMaliResult *r);
+@@ -244,12 +244,14 @@ SweetMali::powerUp(void)
+ 	return true;
+ }
+ 
+-/* s9mali experiments: GPU memory attribute of AS0 and a reset between jobs */
++/* s9mali experiments: GPU memory attribute of AS0, whole-GPU flushes, a reset */
+ bool
+-SweetMali::configure(uint32_t memAttr, bool reset)
++SweetMali::configure(uint32_t memAttr, bool reset, bool flush)
+ {
+ 	bool ok = true;
+ 	IOLockLock(fLock);
++	fExplicitFlush = flush;
++	fTimed = 0;
+ 	if (memAttr != 0) {
+ 		fMemAttr = memAttr;
+ 		if (fPowered && !reset) {
+@@ -268,25 +270,6 @@ SweetMali::configure(uint32_t memAttr, bool reset)
+ 	return ok;
+ }
+ 
+-/* the same job as s9mali's, written through the kernel's own mapping */
+-bool
+-SweetMali::writeJob(uint32_t job, uint32_t target, uint32_t value)
+-{
+-	if (job < MALI_VA || job + 64u > MALI_VA + MALI_MEM_LEN) {
+-		return false;
+-	}
+-	volatile uint32_t *j = (volatile uint32_t *)(fMem + (job - (uint32_t)MALI_VA));
+-	for (int i = 0; i < 16; i++) {
+-		j[i] = 0;
+-	}
+-	j[4] = 1u | 2u << 1 | 1u << 16;
+-	j[8] = target;
+-	j[10] = 6;
+-	j[12] = value;
+-	__asm__ volatile("dsb sy" ::: "memory");
+-	return true;
+-}
+-
+ void
+ SweetMali::powerDown(void)
+ {
+@@ -339,7 +322,7 @@ SweetMali::submit(uint64_t jc, uint32_t slot, SweetMaliResult *r)
+ 	IOLockLock(fLock);
+ 	__asm__ volatile("dsb sy" ::: "memory");
+ 	uint64_t t0 = now();
+-	bool cleanedFirst = flushCaches();
++	bool cleanedFirst = !fExplicitFlush || flushCaches();
+ 	uint64_t t1 = now();
+ 	wr(JOB_CLEAR, 0xffffffffu);
+ 	wr(MMU_CLEAR, 0xffffffffu);
+@@ -370,7 +353,7 @@ SweetMali::submit(uint64_t jc, uint32_t slot, SweetMaliResult *r)
+ 		}
+ 	}
+ 	uint64_t t2 = now();
+-	bool cleaned = flushCaches();
++	bool cleaned = !fExplicitFlush || flushCaches();
+ 	if (fTimed < 8) {
+ 		fTimed++;
+ 		printf("SWEET MALI: submit %u: flush before %llu us, job %llu us, flush after %llu us, flushes ok %d %d, raw %#x\n",
+@@ -438,6 +421,7 @@ SweetMali::start(IOService *provider)
+ 	}
+ 	fLock = IOLockAlloc();
+ 	fMemAttr = AS_MEMATTR;
++	fExplicitFlush = true;
+ 	IOMemoryDescriptor *regs = IOMemoryDescriptor::withPhysicalAddress(MALI_REGS_PA, MALI_REGS_LEN, kIODirectionInOut);
+ 	IOMemoryDescriptor *all = IOMemoryDescriptor::withPhysicalAddress(MALI_MEM_PA, MALI_TOTAL_LEN, kIODirectionInOut);
+ 	fMemDesc = IOMemoryDescriptor::withPhysicalAddress(MALI_MEM_PA, MALI_MEM_LEN, kIODirectionInOut);
+@@ -510,13 +494,13 @@ SweetMaliUserClient::clientClose(void)
+ IOReturn
+ SweetMaliUserClient::clientMemoryForType(UInt32 type, IOOptionBits *options, IOMemoryDescriptor **memory)
+ {
+-	if (type > 1 || fOwner == NULL) {
++	if (type != 0 || fOwner == NULL) {
+ 		return kIOReturnBadArgument;
+ 	}
+ 	IOMemoryDescriptor *m = fOwner->memory();
+ 	m->retain();
+ 	*memory = m;
+-	*options = type == 0 ? kIOMapWriteCombineCache : kIOMapInhibitCache;
++	*options = kIOMapWriteCombineCache;
+ 	return kIOReturnSuccess;
+ }
+ 
+@@ -565,18 +549,12 @@ SweetMaliUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+ 	case 3:
+ 		fOwner->freeAll();
+ 		return kIOReturnSuccess;
+-	case 4:         /* experiments, in: GPU memory attribute (0 = keep), reset */
+-		if (args->scalarInputCount < 2) {
+-			return kIOReturnBadArgument;
+-		}
+-		return fOwner->configure((uint32_t)args->scalarInput[0], args->scalarInput[1] != 0) ?
+-		       kIOReturnSuccess : kIOReturnNotReady;
+-	case 5:         /* experiments, in: job VA, target VA, value */
++	case 4:         /* experiments, in: GPU memory attribute (0 = keep), reset, whole-GPU flushes */
+ 		if (args->scalarInputCount < 3) {
+ 			return kIOReturnBadArgument;
+ 		}
+-		return fOwner->writeJob((uint32_t)args->scalarInput[0], (uint32_t)args->scalarInput[1],
+-		           (uint32_t)args->scalarInput[2]) ? kIOReturnSuccess : kIOReturnBadArgument;
++		return fOwner->configure((uint32_t)args->scalarInput[0], args->scalarInput[1] != 0,
++		           args->scalarInput[2] != 0) ? kIOReturnSuccess : kIOReturnNotReady;
+ 	default:
+ 		return kIOReturnUnsupported;
+ 	}
