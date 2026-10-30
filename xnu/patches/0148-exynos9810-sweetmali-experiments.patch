@@ -1,0 +1,159 @@
+diff --git a/iokit/Kernel/arm/SweetMali.cpp b/iokit/Kernel/arm/SweetMali.cpp
+index 11f26c6..aa1498a 100644
+--- a/iokit/Kernel/arm/SweetMali.cpp
++++ b/iokit/Kernel/arm/SweetMali.cpp
+@@ -13,8 +13,9 @@
+  * rewrite its own tables or reach anything outside this block. Not enough
+  * for CoreAnimation in the end: a real allocator comes with Mesa.
+  *
+- * User client (one at a time): 0 info, 1 alloc, 2 submit and wait, 3 free all;
+- * clientMemoryForType 0 maps the 30 MB, write-combined.
++ * User client (one at a time): 0 info, 1 alloc, 2 submit and wait, 3 free all,
++ * 4 and 5 for s9mali's experiments; clientMemoryForType maps the 30 MB,
++ * 0 write-combined, 1 uncached.
+  */
+ #include <pexpert/arm64/board_config.h>
+ 
+@@ -108,7 +109,7 @@ class SweetMali : public IOService {
+ 	uint32_t fNext, fShaders, fTiler, fL2, fId;
+ 	bool fPowered;
+ 	bool fChainFlag[3];
+-	uint32_t fTimed, fFailLogged;
++	uint32_t fTimed, fFailLogged, fMemAttr;
+ 
+ 	uint32_t rd(uint32_t off) const
+ 	{
+@@ -140,6 +141,8 @@ public:
+ 	bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
+ 	bool powerUp(void);
+ 	void powerDown(void);
++	bool configure(uint32_t memAttr, bool reset);
++	bool writeJob(uint32_t job, uint32_t target, uint32_t value);
+ 	uint32_t alloc(uint32_t size);          /* GPU VA, 0 on failure */
+ 	void freeAll(void);
+ 	bool submit(uint64_t jc, uint32_t slot, SweetMaliResult *r);
+@@ -216,8 +219,6 @@ SweetMali::powerUp(void)
+ 		return false;
+ 	}
+ 	wr(GPU_IRQ_CLEAR, 0xffffffffu);
+-	printf("SWEET MALI: l2 features %#x coherency features %#x enable %#x jm %#x l2_mmu %#x\n",
+-	    rd(GPU_L2_FEATURES), rd(GPU_COHER_FEAT), rd(GPU_COHER_EN), rd(GPU_JM_CONFIG), rd(GPU_L2_MMU_CFG));
+ 	wr(GPU_COHER_EN, COHERENCY_NONE);       /* the CPU does not snoop this memory */
+ 	wr(L2_PWRON, fL2);
+ 	if (!poll(L2_READY, fL2, 0xffffffffu, 100000)) {
+@@ -233,8 +234,8 @@ SweetMali::powerUp(void)
+ 	(void)poll(AS0_STATUS, 0, 1, 10000);
+ 	wr(AS0_TRANSTAB, (uint32_t)(MALI_MEM_PA + MALI_PT_OFF));
+ 	wr(AS0_TRANSTAB + 4, 0);
+-	wr(AS0_MEMATTR, AS_MEMATTR);
+-	wr(AS0_MEMATTR + 4, AS_MEMATTR);
++	wr(AS0_MEMATTR, fMemAttr);
++	wr(AS0_MEMATTR + 4, fMemAttr);
+ 	wr(AS0_TRANSCFG, AS_TRANSCFG);
+ 	wr(AS0_TRANSCFG + 4, 0);
+ 	wr(AS0_COMMAND, 1);             /* AS_COMMAND_UPDATE */
+@@ -243,6 +244,49 @@ SweetMali::powerUp(void)
+ 	return true;
+ }
+ 
++/* s9mali experiments: GPU memory attribute of AS0 and a reset between jobs */
++bool
++SweetMali::configure(uint32_t memAttr, bool reset)
++{
++	bool ok = true;
++	IOLockLock(fLock);
++	if (memAttr != 0) {
++		fMemAttr = memAttr;
++		if (fPowered && !reset) {
++			(void)poll(AS0_STATUS, 0, 1, 10000);
++			wr(AS0_MEMATTR, fMemAttr);
++			wr(AS0_MEMATTR + 4, fMemAttr);
++			wr(AS0_COMMAND, 1);     /* AS_COMMAND_UPDATE */
++			(void)poll(AS0_STATUS, 0, 1, 10000);
++		}
++	}
++	if (reset) {
++		fPowered = false;
++		ok = powerUp();
++	}
++	IOLockUnlock(fLock);
++	return ok;
++}
++
++/* the same job as s9mali's, written through the kernel's own mapping */
++bool
++SweetMali::writeJob(uint32_t job, uint32_t target, uint32_t value)
++{
++	if (job < MALI_VA || job + 64u > MALI_VA + MALI_MEM_LEN) {
++		return false;
++	}
++	volatile uint32_t *j = (volatile uint32_t *)(fMem + (job - (uint32_t)MALI_VA));
++	for (int i = 0; i < 16; i++) {
++		j[i] = 0;
++	}
++	j[4] = 1u | 2u << 1 | 1u << 16;
++	j[8] = target;
++	j[10] = 6;
++	j[12] = value;
++	__asm__ volatile("dsb sy" ::: "memory");
++	return true;
++}
++
+ void
+ SweetMali::powerDown(void)
+ {
+@@ -343,6 +387,11 @@ SweetMali::submit(uint64_t jc, uint32_t slot, SweetMaliResult *r)
+ 			printf("SWEET MALI: job %#llx slot %u not done: raw %#x js_state %#x status %#x head %#x cmd_next %#x head_next %#x config %#x mmu %#x fault %#x addr %#x gpu %#x\n",
+ 			    jc, slot, r->raw, rd(JOB_JS_STATE), r->status, r->head, rd(JS(slot, JS_CMD_NEXT)),
+ 			    rd(JS(slot, JS_HEAD_NEXT)), rd(JS(slot, JS_CONFIG_CUR)), r->mmuRaw, r->asFault, r->asAddr, r->gpuFault);
++			if (jc >= MALI_VA && jc + 64u <= MALI_VA + MALI_MEM_LEN) {
++				volatile uint32_t *d = (volatile uint32_t *)(fMem + (jc - MALI_VA));
++				printf("SWEET MALI: job as the kernel reads it: %#x %#x %#x %#x word4 %#x target %#x type %#x value %#x\n",
++				    d[0], d[1], d[2], d[3], d[4], d[8], d[10], d[12]);
++			}
+ 		}
+ 		/* a job the GPU rejected has already ended: nothing to stop */
+ 		if (!(r->raw & (1u << (16 + slot)))) {
+@@ -388,6 +437,7 @@ SweetMali::start(IOService *provider)
+ 		return false;
+ 	}
+ 	fLock = IOLockAlloc();
++	fMemAttr = AS_MEMATTR;
+ 	IOMemoryDescriptor *regs = IOMemoryDescriptor::withPhysicalAddress(MALI_REGS_PA, MALI_REGS_LEN, kIODirectionInOut);
+ 	IOMemoryDescriptor *all = IOMemoryDescriptor::withPhysicalAddress(MALI_MEM_PA, MALI_TOTAL_LEN, kIODirectionInOut);
+ 	fMemDesc = IOMemoryDescriptor::withPhysicalAddress(MALI_MEM_PA, MALI_MEM_LEN, kIODirectionInOut);
+@@ -460,13 +510,13 @@ SweetMaliUserClient::clientClose(void)
+ IOReturn
+ SweetMaliUserClient::clientMemoryForType(UInt32 type, IOOptionBits *options, IOMemoryDescriptor **memory)
+ {
+-	if (type != 0 || fOwner == NULL) {
++	if (type > 1 || fOwner == NULL) {
+ 		return kIOReturnBadArgument;
+ 	}
+ 	IOMemoryDescriptor *m = fOwner->memory();
+ 	m->retain();
+ 	*memory = m;
+-	*options = kIOMapWriteCombineCache;
++	*options = type == 0 ? kIOMapWriteCombineCache : kIOMapInhibitCache;
+ 	return kIOReturnSuccess;
+ }
+ 
+@@ -515,6 +565,18 @@ SweetMaliUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+ 	case 3:
+ 		fOwner->freeAll();
+ 		return kIOReturnSuccess;
++	case 4:         /* experiments, in: GPU memory attribute (0 = keep), reset */
++		if (args->scalarInputCount < 2) {
++			return kIOReturnBadArgument;
++		}
++		return fOwner->configure((uint32_t)args->scalarInput[0], args->scalarInput[1] != 0) ?
++		       kIOReturnSuccess : kIOReturnNotReady;
++	case 5:         /* experiments, in: job VA, target VA, value */
++		if (args->scalarInputCount < 3) {
++			return kIOReturnBadArgument;
++		}
++		return fOwner->writeJob((uint32_t)args->scalarInput[0], (uint32_t)args->scalarInput[1],
++		           (uint32_t)args->scalarInput[2]) ? kIOReturnSuccess : kIOReturnBadArgument;
+ 	default:
+ 		return kIOReturnUnsupported;
+ 	}

@@ -1,7 +1,7 @@
 /*
  * s9mali: first userland client of the kernel's SweetMali driver (patch 0144).
  * Maps the GPU memory, builds the same Write value job as the kernel self-test
- * from userland, then times a run of jobs through the user client.
+ * from userland, then runs repeat jobs under different conditions.
  *
  * The iOS SDK ships IOKit without headers, so the few declarations needed are
  * below. Link with -framework IOKit.
@@ -33,16 +33,21 @@ extern kern_return_t IOConnectMapMemory64(io_connect_t connect, uint32_t memoryT
 #define SEL_ALLOC       1
 #define SEL_SUBMIT      2
 #define SEL_FREE        3
+#define SEL_CONFIGURE   4
+#define SEL_WRITEJOB    5
 #define JOB_SLOT        1
 #define MAGIC           0xc0ffee42u
-#define RUNS            200
-#define M_READBACK      1u      /* read the job back, then a barrier */
-#define M_USLEEP        2u      /* usleep(1000) before submitting */
-#define M_NEWJOB        4u      /* a job descriptor page never used before */
-#define M_NEWTARGET     8u      /* a target page never used before */
+#define RUNS            100
+#define ATTR_NC         0x4c4c4c4cu     /* what Linux uses for a non-coherent GPU */
+#define ATTR_IMPL       0x88888888u     /* implementation-defined cacheable */
+#define M_NEWJOB        1u      /* a job descriptor page never used before */
+#define M_NEWTARGET     2u      /* a target page never used before */
+#define M_RESET         4u      /* soft reset the GPU before each job */
+#define M_UNCACHED      8u      /* access the memory through the uncached mapping */
+#define M_KWRITE        16u     /* the kernel writes the job through its own mapping */
 
 static io_connect_t conn;
-static volatile uint8_t *mem;
+static volatile uint8_t *mem, *mem_uc;
 static uint64_t base;
 
 static uint32_t
@@ -56,6 +61,13 @@ gpu_alloc(uint32_t size)
 		return 0;
 	}
 	return (uint32_t)out;
+}
+
+static kern_return_t
+configure(uint32_t attr, bool reset)
+{
+	uint64_t in[2] = { attr, reset };
+	return IOConnectCallScalarMethod(conn, SEL_CONFIGURE, in, 2, NULL, NULL);
 }
 
 /* one Write value job: 64-bit descriptor, type 2, index 1, Immediate 32 */
@@ -82,14 +94,16 @@ submit(uint32_t job, uint64_t *r)
 }
 
 /*
- * Repeat jobs failed on the G72 without a whole-GPU cache flush around each job
- * (status 0x58 or the previous run's value in the target, boot-ios48..50).
- * The same pages run first and last, to show whether order matters.
+ * Repeat jobs fail on the G72: status 0x58 or an old value in the target, and
+ * neither a wait before submitting nor a whole-GPU cache flush cures it
+ * (boot-ios48, 49). The first job after a reset has never failed. Each mode
+ * changes one thing: GPU memory attribute, reset, which mapping writes the job.
  */
 static int
-run_mode(const char *name, uint32_t job, uint32_t target, unsigned mode, unsigned spin_us)
+run_mode(const char *name, uint32_t job, uint32_t target, unsigned mode)
 {
 	static uint32_t value = MAGIC;
+	volatile uint8_t *m = (mode & M_UNCACHED) ? mem_uc : mem;
 	uint64_t r[6];
 	int rejected = 0, wrong = 0, late = 0, shown = 0;
 	mach_timebase_info_data_t tb;
@@ -103,24 +117,23 @@ run_mode(const char *name, uint32_t job, uint32_t target, unsigned mode, unsigne
 		if ((mode & M_NEWTARGET) && (target = gpu_alloc(4096)) == 0) {
 			return 1;
 		}
-		volatile uint32_t *j = (volatile uint32_t *)(mem + (job - base));
-		volatile uint32_t *t = (volatile uint32_t *)(mem + (target - base));
-		job_write(j, target, want);
-		if (mode & M_READBACK) {
-			(void)j[12];
-			__asm__ volatile("dsb sy" ::: "memory");
-		}
-		if (mode & M_USLEEP) {
-			usleep(1000);
-		}
-		if (spin_us != 0) {
-			uint64_t s = mach_absolute_time();
-			while ((mach_absolute_time() - s) * tb.numer / tb.denom < spin_us * 1000ULL) {
+		volatile uint32_t *j = (volatile uint32_t *)(m + (job - base));
+		volatile uint32_t *t = (volatile uint32_t *)(m + (target - base));
+		if (mode & M_RESET) {
+			kern_return_t kr = configure(0, true);
+			if (kr != KERN_SUCCESS) {
+				printf("  run %u: reset %#x\n", i, kr);
+				return 1;
 			}
+		}
+		if (mode & M_KWRITE) {
+			uint64_t in[3] = { job, target, want };
+			(void)IOConnectCallScalarMethod(conn, SEL_WRITEJOB, in, 3, NULL, NULL);
+		} else {
+			job_write(j, target, want);
 		}
 		kern_return_t kr = submit(job, r);
 		uint32_t got = t[0], ex = j[0];
-		bool fail = kr != KERN_SUCCESS || got != want;
 		if (kr != KERN_SUCCESS) {
 			rejected++;
 		} else if (got != want) {
@@ -130,10 +143,10 @@ run_mode(const char *name, uint32_t job, uint32_t target, unsigned mode, unsigne
 				late++;
 			}
 		}
-		if (fail && shown < 4) {
+		if ((kr != KERN_SUCCESS || got != want) && shown < 2) {
 			shown++;
-			printf("  run %u: kr %#x want %#x got %#x (want-1: %d) exception %#x word1 %#x\n",
-			    i, kr, want, got, got == want - 1, ex, j[1]);
+			printf("  run %u: kr %#x want %#x got %#x (want-1: %d) exception %#x\n",
+			    i, kr, want, got, got == want - 1, ex);
 		}
 	}
 	uint64_t ns = (mach_absolute_time() - t0) * tb.numer / tb.denom;
@@ -147,8 +160,8 @@ main(void)
 {
 	uint64_t info[4], r[6];
 	uint32_t n = 4;
-	mach_vm_address_t addr = 0;
-	mach_vm_size_t size = 0;
+	mach_vm_address_t addr = 0, addr_uc = 0;
+	mach_vm_size_t size = 0, size_uc = 0;
 	setvbuf(stdout, NULL, _IOLBF, 0);
 
 	io_service_t svc = IOServiceGetMatchingService(MACH_PORT_NULL, IOServiceMatching("SweetMali"));
@@ -175,7 +188,13 @@ main(void)
 		return 1;
 	}
 	mem = (volatile uint8_t *)(uintptr_t)addr;
-	printf("mapped at %#llx size %#llx\n", (unsigned long long)addr, (unsigned long long)size);
+	kr = IOConnectMapMemory64(conn, 1, mach_task_self(), &addr_uc, &size_uc, kIOMapAnywhere);
+	if (kr != KERN_SUCCESS) {
+		printf("FAIL: uncached map %#x\n", kr);
+		return 1;
+	}
+	mem_uc = (volatile uint8_t *)(uintptr_t)addr_uc;
+	printf("mapped at %#llx, uncached at %#llx\n", (unsigned long long)addr, (unsigned long long)addr_uc);
 
 	uint32_t job = gpu_alloc(4096), target = gpu_alloc(4096);
 	if (job == 0 || target == 0) {
@@ -195,12 +214,20 @@ main(void)
 	}
 
 	int bad = 0;
-	bad += run_mode("same pages", job, target, 0, 0);
-	bad += run_mode("new job page", job, target, M_NEWJOB, 0);
-	bad += run_mode("new target page", job, target, M_NEWTARGET, 0);
-	bad += run_mode("new job and target pages", job, target, M_NEWJOB | M_NEWTARGET, 0);
-	bad += run_mode("read back", job, target, M_READBACK, 0);
-	bad += run_mode("same pages again", job, target, 0, 0);
+	bad += run_mode("0x4c same pages", job, target, 0);
+	bad += run_mode("0x4c reset each job", job, target, M_RESET);
+	bad += run_mode("0x4c uncached mapping", job, target, M_UNCACHED);
+	bad += run_mode("0x4c kernel writes job", job, target, M_KWRITE);
+	bad += run_mode("0x4c same pages again", job, target, 0);
+	if ((kr = configure(ATTR_IMPL, false)) != KERN_SUCCESS) {
+		printf("FAIL: configure %#x\n", kr);
+		return 1;
+	}
+	bad += run_mode("0x88 same pages", job, target, 0);
+	bad += run_mode("0x88 new pages", job, target, M_NEWJOB | M_NEWTARGET);
+	bad += run_mode("0x88 uncached mapping", job, target, M_UNCACHED);
+	bad += run_mode("0x88 reset each job", job, target, M_RESET);
+	(void)configure(ATTR_NC, false);
 
 	IOConnectCallScalarMethod(conn, SEL_FREE, NULL, 0, NULL, NULL);
 	IOServiceClose(conn);
