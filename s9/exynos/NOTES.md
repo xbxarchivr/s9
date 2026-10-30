@@ -1157,3 +1157,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 - **Patch 0133 (written, not built):** the fault dump adds the abort frame from srsdb (LR_abt / SPSR_abt at 0x1e6f8 / 0x1e6fc = faulting mode), the top 16 words of each mode stack (0x1e200/0x1e500/0x1e700/0x1e900) and SRAM 0x9000 vs 0x84a4 (did the decompress run).
 - **Reset path, continued (capstone):** after the cache loop, SCTLR |= M (MMU on, A cleared), then blx 0x2689 -> 0x2688 b.w 0x104c (Thumb: bl 0xe94 / b 0xfc2 = Calliope's own GIC distributor/CPU-interface init at 0x17cf1000/0x17cf2000, not __main), then blx 0x3c (ARM: sp = [0x60] = 0x1e000; blx 0x54f0, 0x680c, 0x6b74, 0x6858 = runtime + main). Where the bogus SP comes from is still open; boot-ios34's abort frame/stack dump should say.
 
+- **0133 compiled** (run 40980307678, success): `out/exynos/xnu30/kernel.development.sweet` sha256 dc872caa... **Boot image `out/exynos/boot-ios34.img`** (sha256 59f79fda...) = boot-ios33 blobs/cmdline with the 0133 kernel. Not flashed. Fallback: boot-ios33 (boots iOS) / boot-ios25.
+
