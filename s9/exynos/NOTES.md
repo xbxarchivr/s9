@@ -1159,3 +1159,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 
 - **0133 compiled** (run 40980307678, success): `out/exynos/xnu30/kernel.development.sweet` sha256 dc872caa... **Boot image `out/exynos/boot-ios34.img`** (sha256 59f79fda...) = boot-ios33 blobs/cmdline with the 0133 kernel. Not flashed. Fallback: boot-ios33 (boots iOS) / boot-ios25.
 
+- **boot-ios34 flashed** to BOOT (sda10), readback sha256 59f79fda... matches. Rebooted. Fallback boot-ios33 / boot-ios25.
+
