@@ -1227,3 +1227,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 
 - **boot-ios41 flashed** to BOOT (sda10), readback sha256 7e300d09... matches. Rebooted. Fallback boot-ios40 (old compiler) / boot-ios39.
 
+- **boot-ios41 RESULT (log s9/logs/boot-ios41.txt, observed): the Xcode 16 kernel boots iOS (macos-15 CI is good). Speakers silent (user).** Both amps: 0 failed writes, read back EN 1, SHDN 1, VOL 0x20, GAIN 1, MODE 0x40, SR 8. route ctrl0 0x10 (UAIF1 = SIFS0), gpb1 con 0 -> 0x2222, qdis 0x8; all PCM IPC acked; RDMA0 0x400921 with my buffer. (The log's uaif0 label prints UAIF1 here: 0x1000015.)
+
