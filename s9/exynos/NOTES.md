@@ -1181,3 +1181,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 - **Patch 0136 (written, not built):** after the fault, print physical 0x8004fcb0-0x8004fcff (AP view, safe reads) next to abox_rmem + 0x4fcb0 (= the firmware file).
 - **0136 compiled** (run 40984843085, success): `out/exynos/xnu33/kernel.development.sweet` sha256 e790eb00... **Boot image `out/exynos/boot-ios37.img`** (sha256 7883d585...) = boot-ios36 blobs/cmdline with the 0136 kernel. Not flashed. Fallback: boot-ios36 (boots iOS) / boot-ios25.
 
+- **boot-ios37 flashed** to BOOT (sda10), readback sha256 7883d585... matches. Rebooted. Fallback boot-ios36 / boot-ios25.
+
