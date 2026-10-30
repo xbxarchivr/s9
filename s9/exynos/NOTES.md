@@ -1335,3 +1335,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 - **Invalid tests:** both mappings came back at the same address (0x101800000), so IOKit reused the first map and the "uncached" modes were NOT uncached. Those two lines say nothing about an uncached CPU mapping.
 - Not known: why 0x4c fails on this GPU though Linux's panfrost uses it for non-coherent BOs (0x88 is what older drivers used, from memory). Why "kernel writes job" did so much better at 0x4c. 0x88 ran only after 0x4c in this test.
 - Patch 0149 (written, not built): AS_MEMATTR default 0x88888888, whole-GPU flushes switchable (selector 4 now memattr, reset, flush), uncached map type and writeJob removed. s9mali: 1000 runs each of 0x88 same/new pages with and without whole-GPU flushes, 0x4c control, 0x88 after 0x4c.
+
+- 0149 built: xnu run 41146617874, kernel `out/exynos/xnu44` sha256 8d66d463...; tools run 41146617937, s9mali sha256 669a7566...; `out/exynos/boot-ios51.img` sha256 5e5e4dac0efb333accd185ccd349c8eae86b26d44f67d7fb00b8eb494d3434af, size 42625024. Not flashed.
