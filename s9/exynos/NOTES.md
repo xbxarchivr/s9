@@ -1306,3 +1306,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 
 - **boot-ios48 result (observed, 2026-10-31):** lock screen (user), s9mali ran, first job OK, then FAIL after 7 runs. The kernel's "stuck" lines are not hangs: raw 0x20000 = FAILED bit for slot 1, JS_STATUS 0x58 = DATA_INVALID_FAULT (exception list from memory of the Mali docs, not checked here), no MMU or GPU fault, config 0x3300 and 0x3b00 both seen. Runs: 0 rejected, 1 right, 2 rejected, 3 success with run 2's value, 4 right, 5 rejected, 6 success with run 5's value. So 0146's flag changed the pattern (some runs now right) without fixing it. A rejected job's value turns up on the next run, which looks like the GPU reading an old copy of the descriptor. That reading is a guess. "10762 us per job" here is dominated by failures.
 - s9mali rewritten as six 200-run modes (no kernel change): baseline; read back + 1 ms before submit; 1 ms before reading the target; new job page; new target page; both. Written, not built.
+
+- s9mali modes built: tools run 41141023597, sha256 bf9a1d01...; package pushed, rebooted on boot-ios48 (2026-10-31). Result pending: s9drop.py result.
