@@ -1,0 +1,302 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index a4a7925..93e4dd0 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -1201,6 +1201,33 @@ abox_blob(const char *name, uint32_t *size)
+  * registers are in the SFR: ABOX_CPU_R(x) 0x2C00 + 4x, PC 0x2C3C,
+  * L2C_STATUS 0x2C40.
+  */
++/*
++ * Calliope -> AP (abox.c abox_irq_handler): a message at SRAM ipc_rx 0x30300,
++ * acknowledged by clearing ipc_rx_ack 0x305fc. Polled; no AP interrupt yet.
++ */
++static bool abox_ready;
++static uint32_t abox_ver;
++static unsigned abox_rx_lines;
++
++static void
++abox_rx(vm_offset_t sram)
++{
++	if (!abox_sp(sram + 0x305fc)) {
++		return;
++	}
++	uint32_t id = abox_sp(sram + 0x30300), task = abox_sp(sram + 0x30304), type = abox_sp(sram + 0x30308);
++	uint32_t p1 = abox_sp(sram + 0x3030c), p2 = abox_sp(sram + 0x30310), p3 = abox_sp(sram + 0x30314);
++	if (abox_rx_lines < 60) {
++		abox_rx_lines++;
++		printf("SWEET ABOX: rx ipcid %u task %u msg %#x %#x %#x %#x\n", id, task, type, p1, p2, p3);
++	}
++	if (id == 1 && type == 3) {     /* IPC_SYSTEM, ABOX_BOOT_DONE */
++		abox_ver = p3;
++		abox_ready = true;
++	}
++	touch_wr(sram, 0x305fc, 0);
++}
++
+ /* Calliope VA below 1 MB -> SRAM offset through its coarse table at SRAM 0x28000, or ~0 */
+ static uint32_t
+ abox_va_sram(vm_offset_t sram, uint32_t va)
+@@ -1605,7 +1632,7 @@ exy_abox_boot(void)
+ 	 */
+ 	for (int t = 0; t < 300; t++) {
+ 		uint32_t id = abox_sp(sram + 0x30300), type = abox_sp(sram + 0x30308);
+-		bool done = id == 1 && type == 3;
++		bool done = abox_ready || (id == 1 && type == 3);
+ 		if (t < 10 || t % 20 == 19 || done) {
+ 			printf("SWEET ABOX: t+%d00ms pc %#x cpu_status %#x syspower %#x sram+0 %#x +0x30000 %#x"
+ 			    " rx ipcid %#x msg %#x p1 %#x p3 %#x mmu int %#x far %#x/%#x\n", t,
+@@ -1614,7 +1641,8 @@ exy_abox_boot(void)
+ 			    abox_sp(mmu + 0x60), abox_sp(mmu + 0x70), abox_sp(mmu + 0x80));
+ 		}
+ 		if (done) {
+-			printf("SWEET ABOX: BOOT DONE, Calliope version %#x\n", abox_sp(sram + 0x30314));
++			abox_ready = true;
++			printf("SWEET ABOX: BOOT DONE, Calliope version %#x\n", abox_ver);
+ 			return;
+ 		}
+ 		if (id == 1 && type == 0xfa) {          /* ABOX_REPORT_FAULT */
+@@ -1624,12 +1652,229 @@ exy_abox_boot(void)
+ 			abox_postmortem(sram, sram_len, dram_len);
+ 			return;
+ 		}
+-		touch_wait(100);
++		for (int k = 0; k < 100 && !abox_ready; k++) {
++			abox_rx(sram);
++			delay(1000);
++		}
+ 	}
+ 	printf("SWEET ABOX: no boot done after 30 s\n");
+ 	abox_postmortem(sram, sram_len, dram_len);
+ }
+ 
++/*
++ * Stage 4 (sweetaudio=5): first real playback, RAM -> Calliope -> headphones.
++ * mixer_paths media-headphone: RDMA0 -> SPUS OUT0 -> SIFS0 -> UAIF0 -> CS47L93
++ * AIF1 -> HPOUT2. 48 kHz, 16 bit, stereo. Sources: abox.c __abox_process_ipc,
++ * abox_rdma.c, abox_if.c, star_madera.c, madera.c.
++ */
++#define ABOX_IPC_SYSTEM      1u
++#define ABOX_IPC_PLAYBACK    2u
++#define ABOX_IPC_CONFIG      0xau
++
++/* AP -> Calliope: message at SRAM 0x30000, ack 0x302fc, SGI = ipcid via GICD_SGIR */
++static bool
++abox_tx(vm_offset_t sram, vm_offset_t gic, uint32_t ipcid, uint32_t task, const uint32_t *w, unsigned n)
++{
++	touch_wr(sram, 0x30000, ipcid);
++	touch_wr(sram, 0x30004, task);
++	for (unsigned i = 0; i < n; i++) {
++		touch_wr(sram, 0x30008 + 4 * i, w[i]);
++	}
++	touch_wr(sram, 0x302fc, 1);
++	touch_wr(gic, 0x1f00, (1u << 16) | (ipcid & 0xf));
++	for (int i = 0; i < 10000; i++) {
++		if (!abox_sp(sram + 0x302fc)) {
++			return true;
++		}
++		abox_rx(sram);
++		delay(1);
++	}
++	printf("SWEET ABOX: tx ipcid %u msg %#x: no ack in 10 ms\n", ipcid, n ? w[0] : 0);
++	touch_wr(sram, 0x302fc, 0);
++	return false;
++}
++
++/* PCMTASK message on channel id: {msgtype, channel_id, params...} */
++static bool
++abox_pcm(vm_offset_t sram, vm_offset_t gic, uint32_t id, uint32_t type, uint32_t a, uint32_t b, uint32_t c)
++{
++	uint32_t w[5] = { type, id, a, b, c };
++	bool ok = abox_tx(sram, gic, ABOX_IPC_PLAYBACK, id, w, 5);
++	printf("SWEET ABOX: pcm msg %u: %s\n", type, ok ? "acked" : "NO ACK");
++	return ok;
++}
++
++/* Bhaskara I sine: x in half degrees 0..719, amplitude amp */
++static int
++abox_sine(int x, int amp)
++{
++	int neg = x >= 360;
++	int d = (neg ? x - 360 : x) / 2;
++	int q = d * (180 - d);
++	int v = amp * 4 * q / (40500 - q);
++	return neg ? -v : v;
++}
++
++static void
++exy_abox_play(const struct aspi *b)
++{
++	const uint32_t id = 0, frames = 48000, period = 4800, periods = 40;     /* 1 s ring, 25 ms periods */
++	uint32_t secs = 5;
++	(void)PE_parse_boot_argn("sweetaudiotone", &secs, sizeof(secs));
++	vm_offset_t pmu = ml_io_map(EXY_PMU_PA, PAGE_SIZE);
++	vm_offset_t sfr = ml_io_map(0x17c50000, 0x4000), sram = ml_io_map(0x17d00000, ABOX_SRAM_SIZE);
++	vm_offset_t cmu = ml_io_map(0x17c00000, 0x4000), gic = ml_io_map(0x17cf0000, 0x4000);
++	vm_offset_t gpio = ml_io_map(0x17c60000, PAGE_SIZE);
++	if (!pmu || !sfr || !sram || !cmu || !gic || !gpio) {
++		printf("SWEET ABOX: play: mappings failed\n");
++		return;
++	}
++	abox_rx(sram);
++
++	/* the tone: 1 kHz, about -18 dBFS, in IOVA_RDMA_BUFFER(0) */
++	vm_offset_t rb = ml_io_map_unmappable(ABOX_RMEM_PA + ABOX_RM_RDMA, ABOX_RM_WIN, SWEET_WIMG_IO);
++	for (uint32_t i = 0; i < frames; i++) {
++		uint32_t s = (uint32_t)abox_sine((int)((i % 48) * 15), 4096) & 0xffff;
++		*(volatile uint32_t *)(rb + 4 * i) = s | s << 16;
++	}
++	__asm__ volatile("dsb sy" ::: "memory");
++	ml_io_unmap(rb, ABOX_RM_WIN);
++
++	/* what abox_boot_done_work does: ABOX_RESUME, then the SIF rates and formats */
++	uint32_t w[3] = { 2, 0, 0 };
++	bool ok = abox_tx(sram, gic, ABOX_IPC_SYSTEM, 0, w, 1);
++	printf("SWEET ABOX: ABOX_RESUME: %s\n", ok ? "acked" : "NO ACK");
++	for (uint32_t m = 1; m <= 9; m++) {             /* SET_MIXER..INMUX4_SAMPLE_RATE */
++		w[0] = m;
++		w[1] = 48000;
++		w[2] = 0;
++		ok &= abox_tx(sram, gic, ABOX_IPC_CONFIG, 0, w, 3);
++	}
++	for (uint32_t m = 0x10; m <= 0x18; m++) {       /* SET_MIXER..INMUX4_FORMAT */
++		w[0] = m;
++		w[1] = 16;
++		w[2] = 2;
++		ok &= abox_tx(sram, gic, ABOX_IPC_CONFIG, 0, w, 3);
++	}
++	printf("SWEET ABOX: rates and formats: %s\n", ok ? "acked" : "SOME NOT ACKED");
++
++	/* route: SPUS OUT0 = SIFS0 (bits 2:1 = 1, ASRC off), MIXP 16 bit stereo, UAIF0 SPK = SIFS0 */
++	touch_wr(sfr, 0x200, (touch_rd(sfr, 0x200) & ~0xfu) | (1u << 1));
++	touch_wr(sfr, 0x204, (touch_rd(sfr, 0x204) & ~0x1fu) | 9u);
++	touch_wr(sfr, 0x40, (touch_rd(sfr, 0x40) & ~0xfu) | 1u);
++
++	/* UAIF0 pins: gpb0-1..4 function 2 (DT aud-i2s0-bus) */
++	uint32_t pc = abox_sp(gpio);
++	touch_wr(gpio, 0, (pc & ~0x000ffff0u) | 0x00022220u);
++	/* UAIF0 bit clock: AUDIF 24.576 MHz / 16 = 1.536 MHz (48k * 16 * 2), run from the divider */
++	printf("SWEET ABOX: CMU audif div %#x uaif0 div %#x mux %#x gate %#x/%#x qch %#x; gpb0 con %#x -> %#x\n",
++	    touch_rd(cmu, 0x1800), touch_rd(cmu, 0x1824), touch_rd(cmu, 0x1004), touch_rd(cmu, 0x201c),
++	    touch_rd(cmu, 0x2090), touch_rd(cmu, 0x3028), pc, abox_sp(gpio));
++	touch_wr(cmu, 0x1800, (touch_rd(cmu, 0x1800) & ~0x1ffu) | 47u);
++	touch_wr(cmu, 0x1824, (touch_rd(cmu, 0x1824) & ~0x1ffu) | 15u);
++	touch_wr(cmu, 0x1004, touch_rd(cmu, 0x1004) & ~1u);
++	touch_wr(cmu, 0x201c, touch_rd(cmu, 0x201c) | 3u << 20);        /* MANUAL | CG_VAL */
++	touch_wr(cmu, 0x2090, touch_rd(cmu, 0x2090) | 3u << 20);
++	delay(100);
++	/* UAIF0 master, I2S, 16 bit stereo: FORMAT 9, BCLK_POLARITY, SLOT_MAX 1, SBIT_MAX 15 */
++	touch_wr(sfr, 0x504, 9u << 24 | 1u << 23 | 1u << 18 | 15u << 12);
++	touch_wr(sfr, 0x500, touch_rd(sfr, 0x500) | 1u << 2);
++	/* set_tristate(0): keep the UAIF0 bit clock running (ABOX_BCLK_UAIF0 = bit 2) */
++	touch_wr(sfr, 0x38, touch_rd(sfr, 0x38) | 1u << 2);
++	printf("SWEET ABOX: route ctrl0 %#x spus %#x %#x uaif0 %#x %#x qdis %#x\n", touch_rd(sfr, 0x40),
++	    touch_rd(sfr, 0x200), touch_rd(sfr, 0x204), touch_rd(sfr, 0x500), touch_rd(sfr, 0x504), touch_rd(sfr, 0x38));
++
++	/* Calliope's PCM task, abox_rdma_open/hw_params/prepare */
++	abox_pcm(sram, gic, id, 11, 0, 0, 0);                           /* PCM_PLTDAI_OPEN */
++	abox_pcm(sram, gic, id, 20, 0x91000000u, period, periods);      /* PCM_SET_BUFFER */
++	abox_pcm(sram, gic, id, 14, 48000, 16, 2);                      /* PCM_PLTDAI_HW_PARAMS */
++	abox_pcm(sram, gic, id, 16, 0, 0, 0);                           /* PCM_PLTDAI_PREPARE */
++
++	/* the codec: as stage 2, then ASYNCCLK from FLL2 locked to the AIF1 bit clock (DT cirrus,asyncclk) */
++	uint32_t ck = touch_rd(pmu, EXY_PMU_CLKOUT0);
++	touch_wr(pmu, EXY_PMU_CLKOUT0, (ck & ~(0x3fu << 8) & ~1u) | 1u << 8);
++	delay(1000);
++	for (int i = 0; i < 100 && !(madera_rd(b, MADERA_R_IRQ1_RAW1) & 0x80); i++) {
++		delay(1000);
++	}
++	for (unsigned i = 0; i < sizeof(cs47l92_reva_16_patch) / sizeof(cs47l92_reva_16_patch[0]); i++) {
++		madera_wr(b, cs47l92_reva_16_patch[i][0], cs47l92_reva_16_patch[i][1]);
++	}
++	madera_wr(b, MADERA_R_SYSCLK1, 2u << 8 | 0x40);
++	madera_wr(b, MADERA_R_SAMPLE_RATE1, 0x03);
++	/* AIF1 pins: pinctrl-cs47l92 aif1 = GPIO5-8, alternate function 0 */
++	for (uint32_t g = 0x1708; g <= 0x170e; g += 2) {
++		madera_wr(b, g, madera_rd(b, g) & ~0x3ffu);
++	}
++	/* FLL2: 1.536 MHz AIF1BCLK (src 8) -> 98.304 MHz; madera_calc_fll: FRATIO 1, N 64, integer, gain 3 */
++	madera_wr(b, 0x193, 0);
++	madera_wr(b, 0x194, 0);
++	madera_wr(b, 0x195, 0);
++	madera_wr(b, 0x196, 8);
++	madera_wr(b, 0x199, (madera_rd(b, 0x199) & ~0x3cu) | 3u << 2);
++	madera_wr(b, 0x19a, (madera_rd(b, 0x19a) & ~0xf800u) | 1u << 11 | 2u << 12);
++	madera_wr(b, 0x192, 0x8000u | 64);
++	madera_wr(b, 0x191, madera_rd(b, 0x191) | 1);
++	int lock = -1;
++	for (int i = 0; i < 100; i++) {
++		if (madera_rd(b, 0x1881) & 0x200) {             /* FLL2_LOCK_STS1 */
++			lock = i;
++			break;
++		}
++		delay(1000);
++	}
++	printf("SWEET AUDIO: FLL2 lock after %d ms, raw status %#x\n", lock, madera_rd(b, 0x1881));
++	madera_wr(b, 0x112, 4u << 8 | 0x40 | 5);        /* ASYNCCLK: FLL2, 98.304 MHz, enabled */
++	madera_wr(b, 0x113, 3);                         /* ASYNC_SAMPLE_RATE_1 48 kHz */
++	madera_wr(b, 0x408, (madera_rd(b, 0x408) & ~0xf800u) | 8u << 11);       /* OUT rate: ASYNC 1 */
++	/* AIF1 slave, I2S, on ASYNC rate 1: BCLK_FREQ 11 = 1.536 MHz, 32 BCLK per frame, 16 bit slots */
++	madera_wr(b, 0x500, 11);
++	madera_wr(b, 0x503, 8u << 11);
++	madera_wr(b, 0x504, 2);
++	madera_wr(b, 0x506, 32);
++	madera_wr(b, 0x507, 0x1010);
++	madera_wr(b, 0x508, 0x1010);
++	madera_wr(b, 0x51a, 3);
++	/* HPOUT2 from AIF1RX1/2: mixer 0 dB, DAC -16 dB, about -34 dBFS with the tone (stage 2 was -36) */
++	madera_wr(b, MADERA_R_OUT2LMIX_SRC1, 0x20);
++	madera_wr(b, MADERA_R_OUT2LMIX_VOL1, 0x40u << 1);
++	madera_wr(b, MADERA_R_OUT2RMIX_SRC1, 0x21);
++	madera_wr(b, MADERA_R_OUT2RMIX_VOL1, 0x40u << 1);
++	madera_wr(b, MADERA_R_DAC_VOL2L, 0x60);
++	madera_wr(b, MADERA_R_DAC_VOL2R, 0x0200 | 0x60);
++	madera_wr(b, MADERA_R_OUT_PATH2L, madera_rd(b, MADERA_R_OUT_PATH2L) & ~0x1000u);
++	madera_wr(b, MADERA_R_OUT_ENABLES1, madera_rd(b, MADERA_R_OUT_ENABLES1) | 0x000c);
++	delay(40000);
++
++	/* go: abox_rdma_trigger, abox_uaif_trigger */
++	abox_rx_lines = 0;
++	abox_pcm(sram, gic, id, 17, 1, 0, 0);
++	touch_wr(sfr, 0x500, touch_rd(sfr, 0x500) | 1u);
++	printf("SWEET ABOX: playing %u s: RDMA0 %#x %#x %#x %#x\n", secs, abox_sp(sfr + 0x1000), abox_sp(sfr + 0x1004),
++	    abox_sp(sfr + 0x1008), abox_sp(sfr + 0x100c));
++	for (uint32_t t = 0; t < secs * 100; t++) {
++		abox_rx(sram);
++		if (t % 100 == 50) {
++			printf("SWEET ABOX: t %u ms: pc %#x RDMA0 %#x %#x %#x %#x uaif0 %#x, codec raw %#x %#x\n",
++			    t * 10, abox_sp(sfr + 0x2c3c), abox_sp(sfr + 0x1000), abox_sp(sfr + 0x1004), abox_sp(sfr + 0x1008),
++			    abox_sp(sfr + 0x100c), abox_sp(sfr + 0x500), madera_rd(b, MADERA_R_IRQ1_RAW1),
++			    madera_rd(b, 0x1881));
++		}
++		touch_wait(10);
++	}
++
++	abox_pcm(sram, gic, id, 17, 0, 0, 0);
++	madera_wr(b, MADERA_R_OUT_ENABLES1, madera_rd(b, MADERA_R_OUT_ENABLES1) & ~0x000cu);
++	touch_wr(sfr, 0x500, touch_rd(sfr, 0x500) & ~1u);
++	abox_pcm(sram, gic, id, 15, 0, 0, 0);                   /* PCM_PLTDAI_HW_FREE */
++	abox_pcm(sram, gic, id, 12, 0, 0, 0);                   /* PCM_PLTDAI_CLOSE */
++	madera_wr(b, 0x191, madera_rd(b, 0x191) & ~1u);
++	madera_wr(b, 0x112, 4u << 8 | 5);
++	madera_wr(b, MADERA_R_SYSCLK1, 2u << 8);
++	touch_wr(pmu, EXY_PMU_CLKOUT0, ck);
++	printf("SWEET ABOX: play done\n");
++}
++
+ static void
+ exy_audio_probe(void)
+ {
+@@ -1718,9 +1963,12 @@ exy_audio_probe(void)
+ 	if (on == 3) {
+ 		exy_abox_probe();
+ 	}
+-	if (on == 4) {
++	if (on == 4 || on == 5) {
+ 		exy_abox_boot();
+ 	}
++	if (on == 5 && abox_ready && id == 0x6371) {
++		exy_abox_play(&bus);
++	}
+ 	touch_wr(p0, EXY_GPP0 + 4, d0);
+ 	touch_wr(p0, EXY_GPP0, c0);
+ 	if (was_reset) {
