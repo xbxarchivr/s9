@@ -1260,3 +1260,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 
 - **boot-ios45 flashed** to BOOT (sda10), readback sha256 2c4149b6... matches. Rebooted. Result pending: does iOS touch work with no GPU/audio test?
 
+- **boot-ios45 RESULT (user): iOS touch works** with the same 0143 kernel and no sweetgpu/sweetaudio. Cause of the boot-ios44 report: most likely the test pauses delaying touch start (not directly tested on boot-ios44 again). Next: drop the GPU test pauses, then the SweetMali driver.
+
