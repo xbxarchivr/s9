@@ -1235,3 +1235,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 
 - **boot-ios42 flashed** to BOOT (sda10), readback sha256 c840c764... matches. Rebooted. Fallback boot-ios41 / boot-ios40.
 
+- **boot-ios42 RESULT (log s9/logs/boot-ios42.txt; user: silent throughout). Speakers PARKED at the user's request (2026-10-30), GPU next.** AMP_EN 0x81 did not help. UAIF1 pins toggle during playback (gpb1 con 0x2222, toggles in 20000 reads: 2361 1325 7556 on bits 0-2, bit 3 none), so clocks/data probably leave the chip. Both amps: INT_RAW3 and INT_STATE3 = 0x1 (meaning not looked up), no other flags. Amp tone generator (SPK_SRC 2, TONE 1) also silent, though its value is a guess. Next idea if resumed: amp power/enable outside I2C, INT_RAW3 bit 0, the skipped probe registers. Headphones work (sweetaudio=5). BOOT holds boot-ios42, which adds about 25 s to boot; a sweetaudio-free image would be faster.
+
