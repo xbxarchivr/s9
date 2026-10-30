@@ -1171,3 +1171,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 - **boot-ios35 RESULT (log s9/logs/boot-ios35.txt, observed): booted to iOS.** SRAM 0x40..0x8774 equals the Calliope-SRAM image (0 words differ); SRAM 0x60 = 0x0001e000. So SRAM is intact and the CA7 must see something else at PA 0 after its MMU is on.
 - **ABOX SFR remap (abox.h / abox.c):** ABOX_SYSTEM_CONFIG0 0x20, **ABOX_REMAP_MASK 0x24, ABOX_REMAP_ADDR 0x28**, DYN_CLOCK_OFF 0x30. 9810 regmap defaults: 0x4444, **0xFFF00000, 0x17D00000** (CA7 0x000xxxxx -> SRAM 0x17D00000), 0x7FFFFFFF. abox.c never writes them (REGCACHE_RBTREE with defaults: sync writes only non-default values), so it relies on reset values; with AUD left on by S-Boot they may differ.
 - **Patch 0135 (written, not built):** before SYSPOWER_CTRL/CPU enable, log SFR 0x20/0x24/0x28/0x30 and write the 9810 default to any that differs.
+- **0135 compiled** (run 40983407807, success): `out/exynos/xnu32/kernel.development.sweet` sha256 3457a319... **Boot image `out/exynos/boot-ios36.img`** (sha256 d022a27c...) = boot-ios35 blobs/cmdline with the 0135 kernel. Not flashed. Fallback: boot-ios35 (boots iOS) / boot-ios25.
+
