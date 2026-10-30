@@ -1231,3 +1231,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 
 - **Patch 0141 (written, not built), speaker diagnostics (sweetaudio=6):** AMP_EN 0x81 (DEM bits, as __max98512_spk_enable); after 1 s, GPIO DAT toggle counts on the UAIF pins and amp INT_RAW/STATE 1-3; halfway, both amps switch to their own tone generator (SPK_SRC_SEL 2, TONE_GEN_DC_CFG 1, value a guess; digital -14 dB), restored before stop. Tells the digital link from the amp's analog side. sweetaudio=5 also logs pin toggles for comparison.
 
+- **0141 compiled** (run 41111876459, success): `out/exynos/xnu36/kernel.development.sweet` sha256 134c5363... **Boot image `out/exynos/boot-ios42.img`** (sha256 c840c764...) = sweetaudio=6 + all blobs. Not flashed. Fallback: boot-ios41 / boot-ios40.
+
