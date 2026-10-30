@@ -1,0 +1,33 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index ffc6772..8c96cf4 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -1284,6 +1284,28 @@ abox_fault_dump(vm_offset_t sram, vm_offset_t sfr)
+ 			    i == 12 ? " (R14 = faulting PC)" : "");
+ 		}
+ 	}
++	/*
++	 * boot-ios33: FAULT PC 0x8004fcbc = `push {r4,r5,r6,lr}` at the entry of
++	 * the first scatter-load routine (table at DRAM 0x800e6cd8: decompress
++	 * 0x84a4 -> 0x9000, 0x93c bytes), with DFAR 0x0a2000xx, so the
++	 * faulting mode's SP was bogus. The reset code (0x2960) sets UND
++	 * 0x1e900, ABT 0x1e700, FIQ/IRQ 0x1e500, SVC/SYS 0x1e200. The abort
++	 * vector's `srsdb sp!, #0x17` leaves LR_abt / SPSR_abt (faulting CPSR)
++	 * at 0x1e6f8 / 0x1e6fc. Dump those, the top of each stack, and the
++	 * decompress destination.
++	 */
++	printf("SWEET ABOX: abort frame lr %#x SPSR %#x (faulting mode %#x)\n",
++	    abox_sp(sram + 0x1e6f8), abox_sp(sram + 0x1e6fc), abox_sp(sram + 0x1e6fc) & 0x1f);
++	static const uint32_t tops[] = { 0x1e200, 0x1e500, 0x1e700, 0x1e900 };
++	for (unsigned k = 0; k < 4; k++) {
++		for (uint32_t o = tops[k] - 0x40; o < tops[k]; o += 0x10) {
++			printf("SWEET ABOX: stack %#x: %08x %08x %08x %08x\n", o, abox_sp(sram + o),
++			    abox_sp(sram + o + 4), abox_sp(sram + o + 8), abox_sp(sram + o + 12));
++		}
++	}
++	printf("SWEET ABOX: .data 0x9000: %08x %08x %08x %08x (image 0x84a4: %08x %08x)\n",
++	    abox_sp(sram + 0x9000), abox_sp(sram + 0x9004), abox_sp(sram + 0x9008), abox_sp(sram + 0x900c),
++	    abox_sp(sram + 0x84a4), abox_sp(sram + 0x84a8));
+ }
+ 
+ /*
