@@ -1161,3 +1161,6 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 
 - **boot-ios34 flashed** to BOOT (sda10), readback sha256 59f79fda... matches. Rebooted. Fallback boot-ios33 / boot-ios25.
 
+- **boot-ios34 RESULT (log s9/logs/boot-ios34.txt, observed): booted to iOS.** Abort frame: **SPSR 0x800001ff = SYS mode, Thumb**, LR_abt 0x8004fcbc. .data 0x9000 still zero (decompressor faulted on its first instruction). SYS stack 0x1e1c0-0x1e1ff holds earlier frames (0x00028000, 0x133 = MMU-table builder args; r6-r11 values); FIQ/IRQ (0x1e500) and UND (0x1e900) stacks unused; ABT stack holds the fault frames.
+- **Disassembly:** 0x54f0 (Thumb) is the scatter-load loop (r4 0x800e6cd8 .. r5 0x800e6cf8, ldm {r0-r2}, r3 = [+0xc]|1, blx r3) and never touches SP; it is called from 0x3c right after `ldr sp, [pc, #0x1c]` = SRAM word 0x60 = 0x0001e000 in the image. So SP ~0x0a200063 means the CA7 read something else at VA 0x60 (VA 0-1 MB -> coarse table -> PA 0x0..: is PA 0 on the CA7 bus really this SRAM?) or SRAM changed. r6 0x0a200023 is the same every boot (power-on register contents?).
+- **Patch 0134 (written, not built):** after the fault, compare SRAM 0x40..image end with the Calliope-SRAM blob word by word (first 24 differences + count) and print SRAM 0x40-0x7f.

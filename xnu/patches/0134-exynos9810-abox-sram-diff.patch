@@ -1,0 +1,50 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 8c96cf4..83ea2cd 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -1308,6 +1308,37 @@ abox_fault_dump(vm_offset_t sram, vm_offset_t sfr)
+ 	    abox_sp(sram + 0x84a4), abox_sp(sram + 0x84a8));
+ }
+ 
++/*
++ * boot-ios34: faulting mode SYS (SPSR 0x800001ff), .data at 0x9000 still
++ * zero, so the decompressor's first `push` faulted with SP ~0x0a200063.
++ * The scatter-load loop (0x54f0) does not touch SP; it comes from
++ * `ldr sp, [pc, #0x1c]` at 0x3c, i.e. the SRAM word at 0x60, 0x0001e000
++ * in the image. Compare SRAM with the image after the fault (0x0-0x3c is
++ * the abort context block, expected to differ) and print 0x40-0x7f.
++ */
++static void
++abox_sram_diff(vm_offset_t sram, const uint8_t *img, uint32_t len)
++{
++	for (uint32_t o = 0x40; o < 0x80; o += 0x10) {
++		printf("SWEET ABOX: sram %#x: %08x %08x %08x %08x\n", o, abox_sp(sram + o),
++		    abox_sp(sram + o + 4), abox_sp(sram + o + 8), abox_sp(sram + o + 12));
++	}
++	unsigned diffs = 0, shown = 0;
++	for (uint32_t o = 0x40; o + 4 <= len; o += 4) {
++		uint32_t want = (uint32_t)img[o] | (uint32_t)img[o + 1] << 8 |
++		    (uint32_t)img[o + 2] << 16 | (uint32_t)img[o + 3] << 24;
++		uint32_t got = abox_sp(sram + o);
++		if (got != want) {
++			diffs++;
++			if (shown < 24) {
++				printf("SWEET ABOX: sram diff %#x: %08x, image %08x\n", o, got, want);
++				shown++;
++			}
++		}
++	}
++	printf("SWEET ABOX: sram vs image 0x40-%#x: %u words differ\n", len, diffs);
++}
++
+ /*
+  * boot-ios31: with all ext_bin files loaded Calliope still faults: DFSR
+  * 0x805 (write, level-1 translation fault in its own MMU) at 0x0a2000xx,
+@@ -1540,6 +1571,7 @@ exy_abox_boot(void)
+ 		}
+ 		if (id == 1 && type == 0xfa) {          /* ABOX_REPORT_FAULT */
+ 			abox_fault_dump(sram, sfr);
++			abox_sram_diff(sram, fw_sram, sram_len);
+ 			abox_postmortem(sram, sram_len, dram_len);
+ 			return;
+ 		}
