@@ -1249,3 +1249,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 
 - **Patch 0143 (written, not built): first GPU job, sweetgpu=3** (exy_gpu_job): AArch64 4K page table + Write value job in cp_ram_logging 0xf9200000 (safe-peeked first), AS0 (TRANSTAB, MEMATTR 0x4c.., TRANSCFG 0x10001c6, UPDATE), slot 1 (0x1880 + 0x40..0x60), polls JOB_INT_RAWSTAT up to ~1 s; logs JS1 status, MMU raw, AS0 fault status/address, GPU fault, job exception, target (want 0xc0ffee42). Formats: Linux panfrost, Igalia/mesa midgard.xml (an older copy: gitlab.freedesktop blocks automated fetches). Hard-stops on timeout. Job status register offsets computed from JS_BASE 0x1800, stride 0x80.
 
+- **0143 compiled** (run 41118320342, success): `out/exynos/xnu38/kernel.development.sweet` sha256 fca8bdbd... **Boot image `out/exynos/boot-ios44.img`** (sha256 383b5645...) = sweetgpu=3, no audio. Not flashed. Fallback: boot-ios43 / boot-ios40.
+
