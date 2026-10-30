@@ -1258,3 +1258,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 - Next: stage 2b: real driver: IRQ or polled job completion, GPU memory allocator, a user client for userland, then Mesa Panfrost.
 - **Correction: the user's touch report was about iOS, not TWRP** (my earlier note had it backwards). Log order on boot-ios44: 'SWEET TOUCH: starting in 45 s' comes only after exy_gpu_probe, whose touch_wait(11000) calls add up to about a minute (same for the audio tests), and 'sec_ts sensing' is near the end of the log with one press after it. Likely cause: touch starts about 100 s after boot, not a GPU fault (a guess: boot-ios43 had nearly the same delay and logged 13 touches). **Test image `out/exynos/boot-ios45.img`** (sha256 2c4149b6...) = 0143 kernel with no sweetgpu/sweetaudio: touch should start 45 s after that point. Not flashed. If touch works there, remove the waits from exy_gpu_probe/exy_gpu_job.
 
+- **boot-ios45 flashed** to BOOT (sda10), readback sha256 2c4149b6... matches. Rebooted. Result pending: does iOS touch work with no GPU/audio test?
+
