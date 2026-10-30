@@ -1173,3 +1173,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 - **Patch 0135 (written, not built):** before SYSPOWER_CTRL/CPU enable, log SFR 0x20/0x24/0x28/0x30 and write the 9810 default to any that differs.
 - **0135 compiled** (run 40983407807, success): `out/exynos/xnu32/kernel.development.sweet` sha256 3457a319... **Boot image `out/exynos/boot-ios36.img`** (sha256 d022a27c...) = boot-ios35 blobs/cmdline with the 0135 kernel. Not flashed. Fallback: boot-ios35 (boots iOS) / boot-ios25.
 
+- **boot-ios36 flashed** to BOOT (sda10), readback sha256 d022a27c... matches. Rebooted. Fallback boot-ios35 / boot-ios25.
+
