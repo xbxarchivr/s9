@@ -1327,3 +1327,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 - Patch 0148 (written, not built): user client 4 = set GPU memory attribute / soft reset, 5 = kernel writes the job, mapping type 1 = uncached; failed-job log also dumps the descriptor as the kernel reads it. s9mali: nine modes of 100 runs: 0x4c same pages, reset each job, uncached mapping, kernel writes job, same pages again; 0x88 same pages, new pages, uncached mapping, reset each job.
 
 - 0148 built: xnu run 41144883367, kernel `out/exynos/xnu43` sha256 1a8f2e76...; tools run 41144883369, s9mali sha256 07ec6677...; `out/exynos/boot-ios50.img` sha256 d729146a429d34df67c57048da5eeea68f72f1069f4807a6f76986247bb803d4, size 42625024. Not flashed.
+
+- boot-ios50 flashed 2026-10-31, readback d729146a... matches; s9mali nine experiments pushed; rebooted. Result pending.
