@@ -1253,3 +1253,6 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 
 - **boot-ios44 flashed** to BOOT (sda10), readback sha256 383b5645... matches. Rebooted. Fallback boot-ios43 / boot-ios40.
 
+- **boot-ios44 RESULT (log s9/logs/boot-ios44.txt, observed): THE MALI-G72 RAN ITS FIRST JOB, iOS booted.** Target 0xc0ffee42 as requested, job exception 0x1 (done), JOB_INT raw 0x2 (slot 1 done) after 1 poll, JS1 status 0, MMU raw 0, AS0 fault 0, GPU fault 0. So: GPU page tables (AArch64 4K, TRANSCFG 0x10001c6), the reserved memory at 0xf9200000, job submit and DRAM writes all work, at the DVFS state as left (real clock still unknown). Cores off afterwards.
+- **User reports TWRP touch not working after this boot.** adb works. TWRP's dmesg shows sec_ts press/release events at 14-30 s (sec_touchscreen present), so the controller and its Linux driver responded after this boot; the UI not reacting is unexplained, not proven related to the GPU test. Touch in iOS worked this boot (SWEET HID events). To re-check after a fresh TWRP boot.
+- Next: stage 2b: real driver: IRQ or polled job completion, GPU memory allocator, a user client for userland, then Mesa Panfrost.
