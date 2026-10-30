@@ -1314,3 +1314,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 - s9mali now has nine modes separating readback, spin 10/100/1000 us and usleep. Written, not built.
 
 - s9mali nine modes built: tools run 41141970945; package pushed, rebooted on boot-ios48 (2026-10-31). Result pending.
+
+- **Nine modes result (observed, 2026-10-31, log s9/logs/boot-ios50, 884 rejected lines, no panic), per 200 runs, rejected + wrong:** no wait 52+78; read back only 49+66; spin 10 us 71+65; spin 100 us 101+55; spin 1000 us 134+51; read back + spin 1000 us 193+5; usleep only 115+23; **read back + usleep 149+23**; read back + usleep with new pages 20+0. **So the 0/200 from the previous test did not reproduce and is not a fix: the delay/CPU-write-lag reading is withdrawn.** Runs that succeed look slow (about 30-47 ms) while rejected ones are about 3 ms, so the 47 ms was the cost of success, not of the wait. Rejections rose along the sequence, so the result may depend on earlier jobs or mode order.
