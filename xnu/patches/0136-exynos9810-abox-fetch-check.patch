@@ -1,0 +1,42 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 670e9d4..b60fbf9 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -1339,6 +1339,29 @@ abox_sram_diff(vm_offset_t sram, const uint8_t *img, uint32_t len)
+ 	printf("SWEET ABOX: sram vs image 0x40-%#x: %u words differ\n", len, diffs);
+ }
+ 
++/*
++ * boot-ios36 + unicorn (calemu.py): emulated from reset, Calliope reaches
++ * the decompressor at 0x8004fcbc in SYS mode with SP 0x1e000 and the push
++ * succeeds; r6 = 0x0a200023 is the Cortex-A7 CLIDR (cache loop at 0x2a24).
++ * On the phone the write faults at CLIDR + 0x30/0x44/0x74 (varies per
++ * boot), as if other instructions were fetched there, while data reads of
++ * DRAM (the scatter-load table) were right. Compare what the AP sees at
++ * physical 0x8004fcb0 (low RAM below XNU) with abox_rmem + 0x4fcb0.
++ */
++static void
++abox_fetch_check(void)
++{
++	vm_offset_t phys = ml_io_map_unmappable(0x8004c000, 0x8000, SWEET_WIMG_IO);
++	vm_offset_t rm = ml_io_map_unmappable(ABOX_RMEM_PA + ABOX_RM_DRAM + 0x4c000, 0x8000, SWEET_WIMG_IO);
++	for (uint32_t o = 0x3cb0; o < 0x3d00; o += 0x10) {
++		printf("SWEET ABOX: 0x8004%04x phys %08x %08x %08x %08x | rmem %08x %08x %08x %08x\n", o + 0xc000,
++		    abox_sp(phys + o), abox_sp(phys + o + 4), abox_sp(phys + o + 8), abox_sp(phys + o + 12),
++		    abox_sp(rm + o), abox_sp(rm + o + 4), abox_sp(rm + o + 8), abox_sp(rm + o + 12));
++	}
++	ml_io_unmap(phys, 0x8000);
++	ml_io_unmap(rm, 0x8000);
++}
++
+ /*
+  * boot-ios31: with all ext_bin files loaded Calliope still faults: DFSR
+  * 0x805 (write, level-1 translation fault in its own MMU) at 0x0a2000xx,
+@@ -1594,6 +1617,7 @@ exy_abox_boot(void)
+ 		if (id == 1 && type == 0xfa) {          /* ABOX_REPORT_FAULT */
+ 			abox_fault_dump(sram, sfr);
+ 			abox_sram_diff(sram, fw_sram, sram_len);
++			abox_fetch_check();
+ 			abox_postmortem(sram, sram_len, dram_len);
+ 			return;
+ 		}
