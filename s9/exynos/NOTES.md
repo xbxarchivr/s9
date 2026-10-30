@@ -1150,3 +1150,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 - **Patch 0132 (written, not built):** fault dump adds the coarse-table entries for VA 0-0x34000, the faulting PC + CPSR (VA 0x9550/0x954c) and the saved r0-r14 context (block at *(VA 0x955c)), read through the coarse table (abox_va_sram); L1 print limit 96.
 - **0132 compiled** (run 40978964403, success): `out/exynos/xnu29/kernel.development.sweet` sha256 814ff057... **Boot image `out/exynos/boot-ios33.img`** (sha256 ca91a1a4...) = boot-ios32 blobs/cmdline with the 0132 kernel. Not flashed. Fallback: boot-ios32/31 (boot iOS) / boot-ios25.
 
+- **boot-ios33 flashed** to BOOT (sda10), readback sha256 ca91a1a4... matches. Rebooted. Fallback boot-ios32 / boot-ios25.
+
