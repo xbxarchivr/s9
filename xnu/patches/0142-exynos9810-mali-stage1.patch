@@ -1,0 +1,104 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index f1f6a74..110c748 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -2049,6 +2049,91 @@ exy_abox_play(const struct aspi *b, vm_offset_t p1, bool spk)
+ 	printf("SWEET ABOX: play done\n");
+ }
+ 
++/*
++ * GPU stage 1 (boot-arg sweetgpu=1 read, 2 also reset + power cycle the cores):
++ * Mali-G72 (DT mali@17500000, reg 0x5000; no firmware on this Job Manager
++ * generation). Power: DT pd-embedded_g3d, flexpmu embedded_g3d_on: CMU_G3D
++ * 0x17400000 PLL_CON2 0x148 = 0x30000003, PLL_CON0 0x140 bit 4, MUX_USER 0x100
++ * bit 4, PMU 0x4040 [3:0], status 0x4044; then the DTZPC restore as
++ * pmucal_local.c (need_smc 0x17410204). Clock: ACPM DVFS domain 4 (DT
++ * g3d_cmu_cal_id), lowest 260 MHz (gpu_min_clock 0x3f7a0). Register offsets:
++ * kbase mali_midg_regmap.h. Reads are safe; a line is flushed before each risky step.
++ */
++static void
++exy_gpu_probe(void)
++{
++	int on = 0;
++	(void)PE_parse_boot_argn("sweetgpu", &on, sizeof(on));
++	if (!on) {
++		return;
++	}
++	vm_offset_t pmu = ml_io_map(EXY_PMU_PA, 0x5000), cmu = ml_io_map(0x17400000, 0x4000);
++	vm_offset_t g = ml_io_map(0x17500000, 0x5000);
++	if (!pmu || !cmu || !g) {
++		printf("SWEET GPU: mappings failed\n");
++		return;
++	}
++	uint32_t st = touch_rd(pmu, 0x4044);
++	printf("SWEET GPU: PD config %#x status %#x; DVFS g3d %ld kHz; going to read CMU_G3D\n", touch_rd(pmu, 0x4040), st,
++	    exy_dvfs(4, 1, 0));
++	touch_wait(11000);
++	printf("SWEET GPU: CMU pll_con0 %#x pll_con2 %#x mux_user %#x\n", abox_sp(cmu + 0x140), abox_sp(cmu + 0x148),
++	    abox_sp(cmu + 0x100));
++	if ((st & 0xf) != 0xf) {
++		printf("SWEET GPU: powering the G3D domain...\n");
++		touch_wait(11000);
++		touch_wr(cmu, 0x148, 0x30000003);
++		touch_wr(cmu, 0x140, touch_rd(cmu, 0x140) | 1u << 4);
++		touch_wr(cmu, 0x100, touch_rd(cmu, 0x100) | 1u << 4);
++		touch_wr(pmu, 0x4040, touch_rd(pmu, 0x4040) | 0xfu);
++		int n;
++		for (n = 0; n < 10000 && (touch_rd(pmu, 0x4044) & 0xf) != 0xf; n++) {
++			delay(10);
++		}
++		int64_t r = exy_smc(0x82000410, 1, 0x17410204, 0);
++		printf("SWEET GPU: PD status %#x after %d polls, DTZPC restore %lld\n", touch_rd(pmu, 0x4044), n, r);
++	}
++	printf("SWEET GPU: DVFS set 260 MHz: %ld, now %ld kHz; reading GPU_ID...\n", exy_dvfs(4, 0, 260000), exy_dvfs(4, 1, 0));
++	touch_wait(11000);
++	printf("SWEET GPU: GPU_ID %#x L2 %#x tiler %#x mem %#x mmu %#x AS %#x JS %#x status %#x\n", abox_sp(g), abox_sp(g + 4),
++	    abox_sp(g + 0xc), abox_sp(g + 0x10), abox_sp(g + 0x14), abox_sp(g + 0x18), abox_sp(g + 0x1c), abox_sp(g + 0x34));
++	uint32_t sh = abox_sp(g + 0x100), ti = abox_sp(g + 0x110), l2 = abox_sp(g + 0x120);
++	printf("SWEET GPU: present shader %#x %#x tiler %#x l2 %#x; ready %#x %#x %#x; irq raw %#x fault %#x\n", sh,
++	    abox_sp(g + 0x104), ti, l2, abox_sp(g + 0x140), abox_sp(g + 0x150), abox_sp(g + 0x160), abox_sp(g + 0x20),
++	    abox_sp(g + 0x3c));
++	if (on < 2 || sh == 0xababababu || sh == 0) {
++		return;
++	}
++	printf("SWEET GPU: soft reset...\n");
++	touch_wait(11000);
++	touch_wr(g, 0x24, 0xffffffffu);         /* GPU_IRQ_CLEAR */
++	touch_wr(g, 0x30, 1);                   /* GPU_COMMAND SOFT_RESET */
++	int n;
++	for (n = 0; n < 100000 && !(abox_sp(g + 0x20) & 0x100); n++) {  /* RESET_COMPLETED */
++		delay(1);
++	}
++	printf("SWEET GPU: reset done after %d polls, raw %#x; powering L2, tiler, shaders...\n", n, abox_sp(g + 0x20));
++	touch_wait(11000);
++	touch_wr(g, 0x24, 0xffffffffu);
++	touch_wr(g, 0x1a0, l2);                 /* L2_PWRON_LO, first */
++	for (n = 0; n < 100000 && abox_sp(g + 0x160) != l2; n++) {
++		delay(1);
++	}
++	touch_wr(g, 0x190, ti);
++	touch_wr(g, 0x180, sh);
++	for (n = 0; n < 100000 && (abox_sp(g + 0x140) != sh || abox_sp(g + 0x150) != ti); n++) {
++		delay(1);
++	}
++	printf("SWEET GPU: READY shader %#x tiler %#x l2 %#x after %d polls, raw %#x fault %#x status %#x\n", abox_sp(g + 0x140),
++	    abox_sp(g + 0x150), abox_sp(g + 0x160), n, abox_sp(g + 0x20), abox_sp(g + 0x3c), abox_sp(g + 0x34));
++	touch_wr(g, 0x1c0, sh);                 /* off again: nothing uses them yet */
++	touch_wr(g, 0x1d0, ti);
++	delay(1000);
++	touch_wr(g, 0x1e0, l2);
++	delay(1000);
++	printf("SWEET GPU: cores off, ready %#x %#x %#x\n", abox_sp(g + 0x140), abox_sp(g + 0x150), abox_sp(g + 0x160));
++}
++
+ static void
+ exy_audio_probe(void)
+ {
+@@ -2281,6 +2366,7 @@ touch_thread(void *arg, wait_result_t result)
+ 		if (st.mbox && st.sram) {
+ 			exy_cpu_dvfs();
+ 			exy_audio_probe();
++			exy_gpu_probe();
+ 		}
+ 	}
+ 	if (!st.enabled) {
