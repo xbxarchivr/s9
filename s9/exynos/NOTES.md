@@ -1213,3 +1213,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 
 - **boot-ios40 flashed** to BOOT (sda10), readback sha256 aef728c5... matches. Rebooted. Fallback boot-ios39 / boot-ios25.
 
+- **boot-ios40 RESULT (user, observed): the 1 kHz tone was HEARD in the headphones** = first playback RAM -> Calliope -> UAIF0 -> CS47L93 AIF1 -> HPOUT2 (patch 0138, sweetaudio=5). Log not read yet. Next: speaker amps on UAIF1, then a kernel PCM interface, then iOS.
+
