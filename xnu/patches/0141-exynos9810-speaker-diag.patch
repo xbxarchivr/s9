@@ -1,0 +1,94 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 775e228..f1f6a74 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -1846,7 +1846,7 @@ abox_amps(vm_offset_t p1, bool on)
+ 		n += ai2c_write16(&sda, &scl, ad, 0x0018, a ? 0x02 : 0x01) != 0;
+ 		n += ai2c_write16(&sda, &scl, ad, 0x0025, a ? 0x41 : 0x00) != 0;
+ 		n += ai2c_write16(&sda, &scl, ad, 0x0026, a ? 0x01 : 0x00) != 0;
+-		n += ai2c_write16(&sda, &scl, ad, 0x0038, 1) != 0;
++		n += ai2c_write16(&sda, &scl, ad, 0x0038, 0x81) != 0;   /* AMP_EN | DEM_EN, __max98512_spk_enable */
+ 		n += ai2c_write16(&sda, &scl, ad, 0x0400, 1) != 0;
+ 		delay(5000);
+ 		printf("SWEET AUDIO: amp %#x: %d failed writes (last %d); EN %d SHDN %d VOL %d GAIN %d MODE %d SR %d\n", ad, n, err,
+@@ -1859,6 +1859,58 @@ abox_amps(vm_offset_t p1, bool on)
+ 	touch_wr(p1, EXY_GPP4, c4);
+ }
+ 
++/*
++ * boot-ios41: both amps read back as configured, UAIF1 and RDMA0 running, and
++ * silence. While playing: the amps' flags (INT_RAW 1-3, INT_STATE 1-3), then
++ * optionally their own tone generator (SPK_SRC_SEL 2, TONE_GEN_DC_CFG; the
++ * value is undocumented in max98512.c, 1 is a guess) at -14 dB.
++ */
++static void
++abox_amp_diag(vm_offset_t p1, int tone)
++{
++	struct apin scl = {p1, EXY_GPP4, 4}, sda = {p1, EXY_GPP4, 5};
++	uint32_t c4 = touch_rd(p1, EXY_GPP4), d4 = touch_rd(p1, EXY_GPP4 + 4), u4 = touch_rd(p1, EXY_GPP4 + 8);
++	touch_wr(p1, EXY_GPP4 + 8, u4 & ~(0xfu << 16 | 0xfu << 20));
++	apin_con(&scl, 0);
++	apin_con(&sda, 0);
++	delay(20);
++	for (int a = 0; a < 2; a++) {
++		uint8_t ad = a ? 0x3a : MAX98512_ADDR;
++		if (tone >= 0) {
++			(void)ai2c_write16(&sda, &scl, ad, 0x0035, tone ? 0x08 : 0x20);
++			(void)ai2c_write16(&sda, &scl, ad, 0x0037, (uint8_t)tone);
++			(void)ai2c_write16(&sda, &scl, ad, 0x0039, tone ? 2 : 0);
++		}
++		printf("SWEET AUDIO: amp %#x raw %#x %#x %#x state %#x %#x %#x src %d tone %d en %#x boost %#x\n", ad,
++		    ai2c_read16(&sda, &scl, ad, 0x0001), ai2c_read16(&sda, &scl, ad, 0x0002),
++		    ai2c_read16(&sda, &scl, ad, 0x0003), ai2c_read16(&sda, &scl, ad, 0x0004),
++		    ai2c_read16(&sda, &scl, ad, 0x0005), ai2c_read16(&sda, &scl, ad, 0x0006),
++		    ai2c_read16(&sda, &scl, ad, 0x0039), ai2c_read16(&sda, &scl, ad, 0x0037),
++		    ai2c_read16(&sda, &scl, ad, 0x0038), ai2c_read16(&sda, &scl, ad, 0x0087));
++	}
++	touch_wr(p1, EXY_GPP4 + 4, d4);
++	touch_wr(p1, EXY_GPP4 + 8, u4);
++	touch_wr(p1, EXY_GPP4, c4);
++}
++
++/* do the I2S lines toggle? GPIO DAT also reads pins in their alternate function */
++static void
++abox_pin_toggles(vm_offset_t gpio, uint32_t bank)
++{
++	unsigned t[8] = { 0 };
++	uint32_t prev = abox_sp(gpio + bank + 4), one = prev;
++	for (int i = 0; i < 20000; i++) {
++		uint32_t v = abox_sp(gpio + bank + 4), x = v ^ prev;
++		for (int k = 0; k < 8; k++) {
++			t[k] += (x >> k) & 1;
++		}
++		one |= v;
++		prev = v;
++	}
++	printf("SWEET ABOX: pins bank %#x con %#x dat seen-high %#x; toggles in 20000 reads: %u %u %u %u %u %u %u %u\n", bank,
++	    abox_sp(gpio + bank), one, t[0], t[1], t[2], t[3], t[4], t[5], t[6], t[7]);
++}
++
+ static void
+ exy_abox_play(const struct aspi *b, vm_offset_t p1, bool spk)
+ {
+@@ -1963,8 +2015,21 @@ exy_abox_play(const struct aspi *b, vm_offset_t p1, bool spk)
+ 			    abox_sp(sfr + 0x100c), abox_sp(sfr + uc0), spk ? 0 : madera_rd(b, MADERA_R_IRQ1_RAW1),
+ 			    spk ? 0 : madera_rd(b, 0x1881));
+ 		}
++		if (t == 100) {
++			abox_pin_toggles(gpio, spk ? 0x20 : 0);
++			if (spk) {
++				abox_amp_diag(p1, -1);
++			}
++		}
++		if (spk && t == secs * 50) {
++			printf("SWEET ABOX: amp tone generator on\n");
++			abox_amp_diag(p1, 1);
++		}
+ 		touch_wait(10);
+ 	}
++	if (spk) {
++		abox_amp_diag(p1, 0);
++	}
+ 
+ 	abox_pcm(sram, gic, id, 17, 0, 0, 0);
+ 	if (spk) {

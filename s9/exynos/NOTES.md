@@ -1229,3 +1229,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 
 - **boot-ios41 RESULT (log s9/logs/boot-ios41.txt, observed): the Xcode 16 kernel boots iOS (macos-15 CI is good). Speakers silent (user).** Both amps: 0 failed writes, read back EN 1, SHDN 1, VOL 0x20, GAIN 1, MODE 0x40, SR 8. route ctrl0 0x10 (UAIF1 = SIFS0), gpb1 con 0 -> 0x2222, qdis 0x8; all PCM IPC acked; RDMA0 0x400921 with my buffer. (The log's uaif0 label prints UAIF1 here: 0x1000015.)
 
+- **Patch 0141 (written, not built), speaker diagnostics (sweetaudio=6):** AMP_EN 0x81 (DEM bits, as __max98512_spk_enable); after 1 s, GPIO DAT toggle counts on the UAIF pins and amp INT_RAW/STATE 1-3; halfway, both amps switch to their own tone generator (SPK_SRC_SEL 2, TONE_GEN_DC_CFG 1, value a guess; digital -14 dB), restored before stop. Tells the digital link from the amp's analog side. sweetaudio=5 also logs pin toggles for comparison.
+
