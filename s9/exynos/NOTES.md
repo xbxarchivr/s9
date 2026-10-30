@@ -1278,3 +1278,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 - Unverified: the raw disk open and ad-hoc signed binaries as a launchd job; the IOKit symbols link. packer layout checked locally against the C structs by size only.
 - `s9-ios-tools.yml` moved to macos-15 (macos-14 retires 2026-11-02); not built on it yet.
 - Next: push (needs approval), run s9-ios-tools, put s9drop in `jailbreak/jb`, image step, `s9drop.py push --run /usr/local/bin/s9mali s9mali:/usr/local/bin/s9mali`, boot, `s9drop.py result`.
+
+- s9-ios-tools run 41125721336 (macos-15, -Werror clean, success): s9mali and s9drop built, artifact in s9/out/ios-tools-mali/; s9drop copied to s9/jailbreak/jb/. Not run on the phone. Next: user runs add-s9drop-wsl.sh.
