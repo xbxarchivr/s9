@@ -1319,3 +1319,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 - Next idea (a guess, from the pattern and Linux's register list, not proven): GPU L2 keeps or writes back stale lines; a dirty descriptor line written back after the CPU rewrote it would give the old job, and speculative fills would give zeros on new pages. Patch 0147 (written, not built): GPU_CMD 8 CLEAN_INV_CACHES around each job, COHERENCY_ENABLE = NONE after reset, log of L2/coherency/JM/L2_MMU registers, timing of the first 8 submits, spin 2 ms before sleeping in the job poll, no HARD_STOP on a job the GPU rejected, log limited to 8 failures. s9mali: six modes with the same pages first and last.
 
 - 0147 built: xnu run 41142819036, kernel `out/exynos/xnu42` sha256 5e2730ca...; tools run 41142818971, s9mali sha256 ff522ab3...; `out/exynos/boot-ios49.img` sha256 ee3a5be080028776bfd2e72b147a7496308a6c1c5ad403b31b0f516154c70c37, size 42625024. (The logs named boot-ios49/50 are s9mali runs on boot-ios48, not this image.) Not flashed.
+
+- boot-ios49 flashed 2026-10-31, readback ee3a5be0... matches; s9mali six modes pushed; rebooted. Result pending.
