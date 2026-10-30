@@ -1267,3 +1267,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 
 
 - 2026-10-30: boot-ios46 flashed to BOOT (sda10), readback sha256 a19b156d... matches, rebooted. Fallback boot-ios45 (2c4149b6..., touch works). Awaiting log: want `SWEET MALI: self-test OK`, target 0xc0ffee42, and touch still working.
+
+- 2026-10-30: boot-ios46 result (observed, s9/logs/boot-ios46): `SWEET MALI: self-test OK: target 0xc0ffee42 ... exception 0x1; raw 0x2 status 0 mmu 0 fault 0`, then `registered`. iOS reached the lock screen and touch works (user). IOKit driver stage done apart from userland, which is untested. Next: userland client for SweetMaliUserClient.
