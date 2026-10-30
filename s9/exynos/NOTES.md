@@ -1301,3 +1301,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 - Patch 0146 (written, not built): alternating flag, wait for COMMAND_NEXT idle, kernel log line with full job-slot state on a stuck job. s9mali: clears results before each submit, correct job count.
 
 - 0146 built: xnu run 41137018745, kernel `out/exynos/xnu41` sha256 d3f1e09d...; tools run 41137018738, s9mali sha256 1c20b7b3... in `out/ios-tools-mali`; `out/exynos/boot-ios48.img` sha256 6109fefd075cead07d2f0372988620d79a121abf3e0377082e4a22154442d078, size 42625024 = boot-ios47 cmdline. Not flashed.
+
+- boot-ios48 flashed 2026-10-31, readback 6109fefd... matches; new s9mali package pushed; rebooted. Result pending: s9drop.py result.
