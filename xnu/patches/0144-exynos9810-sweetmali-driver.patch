@@ -49,10 +49,10 @@ index 809b9bf..3676a9b 100644
  	for (n = 0; n < 100000 && abox_sp(g + 0x160) != l2; n++) {
 diff --git a/iokit/Kernel/arm/SweetMali.cpp b/iokit/Kernel/arm/SweetMali.cpp
 new file mode 100644
-index 0000000..384217b
+index 0000000..961816b
 --- /dev/null
 +++ b/iokit/Kernel/arm/SweetMali.cpp
-@@ -0,0 +1,450 @@
+@@ -0,0 +1,451 @@
 +/*
 + * Galaxy S9 (Exynos 9810): Mali-G72 MP18, first driver. Boot-arg sweetmali:
 + * 1 = publish the service, 2 = also run a kernel self-test job.
@@ -74,6 +74,7 @@ index 0000000..384217b
 +#include <pexpert/arm64/board_config.h>
 +
 +#if defined(SWEET)
++#include <IOKit/IOKitKeys.h>
 +#include <IOKit/IOLib.h>
 +#include <IOKit/IOService.h>
 +#include <IOKit/IOUserClient.h>
