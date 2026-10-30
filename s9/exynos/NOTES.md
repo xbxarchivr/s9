@@ -1308,3 +1308,7 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 - s9mali rewritten as six 200-run modes (no kernel change): baseline; read back + 1 ms before submit; 1 ms before reading the target; new job page; new target page; both. Written, not built.
 
 - s9mali modes built: tools run 41141023597, sha256 bf9a1d01...; package pushed, rebooted on boot-ios48 (2026-10-31). Result pending: s9drop.py result.
+
+- **s9mali modes result (observed, 2026-10-31, boot-ios48 kernel, log s9/logs/boot-ios49, 713 kernel lines all raw 0x20000 status 0x58, no MMU or GPU fault, no panic):** per 200 runs: same pages 50 rejected + 46 wrong (8507 us/run); **read back + usleep(1000) before submit: 0 rejected, 0 wrong (47010 us/run)**; usleep before reading target: 87 + 68; new job page: 196 + 3; new target page: 186 + 14; both new: 194 + 0. Wrong values are nearly always want-1, and only 4 of all wrong values corrected themselves 1 ms later, so the target is not arriving late; the job really wrote an old value.
+- Reading (inference): the GPU sometimes reads the descriptor as it was before the CPU's latest writes: a reused page gives the previous valid descriptor (old value, old target), a never-used page gives zeros (status 0x58). Whether the fix comes from the readback or the wait is not separated, and the kernel's dsb sy before START was not enough. 47 ms/run is far too slow; usleep(1000) and IOSleep(1) look much longer than 1 ms here (unmeasured).
+- s9mali now has nine modes separating readback, spin 10/100/1000 us and usleep. Written, not built.

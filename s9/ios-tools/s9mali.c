@@ -36,8 +36,8 @@ extern kern_return_t IOConnectMapMemory64(io_connect_t connect, uint32_t memoryT
 #define JOB_SLOT        1
 #define MAGIC           0xc0ffee42u
 #define RUNS            200
-#define M_SETTLE        1u      /* read the job back and wait before submitting */
-#define M_LATE          2u      /* wait before reading the target */
+#define M_READBACK      1u      /* read the job back, then a barrier */
+#define M_USLEEP        2u      /* usleep(1000) before submitting */
 #define M_NEWJOB        4u      /* a job descriptor page never used before */
 #define M_NEWTARGET     8u      /* a target page never used before */
 
@@ -82,11 +82,13 @@ submit(uint32_t job, uint64_t *r)
 }
 
 /*
- * Repeat jobs fail on the G72 (boot-ios48): status 0x58 or the previous run's
- * value in the target. Each mode changes one thing, to tell what they depend on.
+ * Repeat jobs fail on the G72: status 0x58 or the previous run's value in the
+ * target, as if the GPU read the descriptor before the CPU's writes. Reading it
+ * back plus usleep(1000) before submitting fixed all 200 runs (boot-ios49);
+ * these modes separate the two and find how long a wait is needed.
  */
 static int
-run_mode(const char *name, uint32_t job, uint32_t target, unsigned mode)
+run_mode(const char *name, uint32_t job, uint32_t target, unsigned mode, unsigned spin_us)
 {
 	static uint32_t value = MAGIC;
 	uint64_t r[6];
@@ -105,15 +107,19 @@ run_mode(const char *name, uint32_t job, uint32_t target, unsigned mode)
 		volatile uint32_t *j = (volatile uint32_t *)(mem + (job - base));
 		volatile uint32_t *t = (volatile uint32_t *)(mem + (target - base));
 		job_write(j, target, want);
-		if (mode & M_SETTLE) {
+		if (mode & M_READBACK) {
 			(void)j[12];
 			__asm__ volatile("dsb sy" ::: "memory");
+		}
+		if (mode & M_USLEEP) {
 			usleep(1000);
+		}
+		if (spin_us != 0) {
+			uint64_t s = mach_absolute_time();
+			while ((mach_absolute_time() - s) * tb.numer / tb.denom < spin_us * 1000ULL) {
+			}
 		}
 		kern_return_t kr = submit(job, r);
-		if (mode & M_LATE) {
-			usleep(1000);
-		}
 		uint32_t got = t[0], ex = j[0];
 		bool fail = kr != KERN_SUCCESS || got != want;
 		if (kr != KERN_SUCCESS) {
@@ -190,12 +196,16 @@ main(void)
 	}
 
 	int bad = 0;
-	bad += run_mode("reuse job and target", job, target, 0);
-	bad += run_mode("read back + 1 ms before submit", job, target, M_SETTLE);
-	bad += run_mode("1 ms before reading target", job, target, M_LATE);
-	bad += run_mode("new job page each run", job, target, M_NEWJOB);
-	bad += run_mode("new target page each run", job, target, M_NEWTARGET);
-	bad += run_mode("new job and target pages", job, target, M_NEWJOB | M_NEWTARGET);
+	bad += run_mode("no wait", job, target, 0, 0);
+	bad += run_mode("read back only", job, target, M_READBACK, 0);
+	bad += run_mode("spin 10 us", job, target, 0, 10);
+	bad += run_mode("spin 100 us", job, target, 0, 100);
+	bad += run_mode("spin 1000 us", job, target, 0, 1000);
+	bad += run_mode("read back + spin 1000 us", job, target, M_READBACK, 1000);
+	bad += run_mode("usleep(1000) only", job, target, M_USLEEP, 0);
+	bad += run_mode("read back + usleep(1000)", job, target, M_READBACK | M_USLEEP, 0);
+	bad += run_mode("read back + usleep(1000), new pages", job, target,
+	    M_READBACK | M_USLEEP | M_NEWJOB | M_NEWTARGET, 0);
 
 	IOConnectCallScalarMethod(conn, SEL_FREE, NULL, 0, NULL, NULL);
 	IOServiceClose(conn);
