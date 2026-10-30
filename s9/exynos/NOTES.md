@@ -1241,3 +1241,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 - **Patch 0142 (written, not built): boot-arg sweetgpu** (exy_gpu_probe; 1 read, 2 also soft reset and core power on/off). Build boot images without sweetaudio to drop the 25 s audio wait.
 - **0142 compiled** (run 41114416729, success): `out/exynos/xnu37/kernel.development.sweet` sha256 b767c081... **Boot image `out/exynos/boot-ios43.img`** (sha256 c18fdf36...) = sweetgpu=2, no sweetaudio, no audio firmware blobs. Not flashed. Fallback: boot-ios42 / boot-ios40.
 
+- **boot-ios43 flashed** to BOOT (sda10), readback sha256 c18fdf36... matches. Rebooted. Fallback boot-ios42 / boot-ios40.
+
