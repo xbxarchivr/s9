@@ -60,7 +60,7 @@ def on_code(uc, addr, size, _):
         cpsr = uc.reg_read(UC_ARM_REG_CPSR)
         print(f'@{addr:#010x} sp {uc.reg_read(UC_ARM_REG_SP):#010x} cpsr {cpsr:#x} mode {cpsr & 0x1f:#x} '
               f'r0 {uc.reg_read(UC_ARM_REG_R0):#x} r6 {uc.reg_read(UC_ARM_REG_R6):#x} n={state["n"]}')
-        if (addr & ~1) == 0x8004fcbc:
+        if (addr & ~1) == 0x8004fcbc and not os.environ.get('CAL_GO'):
             uc.emu_stop()
 
 def on_intr(uc, intno, _):

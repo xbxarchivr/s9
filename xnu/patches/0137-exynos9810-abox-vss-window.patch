@@ -1,0 +1,65 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index b60fbf9..a4a7925 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -1121,9 +1121,10 @@ open:
+ #define ABOX_RM_DRAM     0x0000000u     /* 18 MB  -> IOVA 0x80000000 */
+ #define ABOX_RM_IVA      0x1200000u     /* 1 MB   -> IOVA 0x90000000 */
+ #define ABOX_RM_RDMA     0x1300000u     /* 8 MB   -> IOVA 0x91000000 */
+-#define ABOX_RM_VSS      0x1b00000u     /* 6 MB   -> IOVA 0xA0000000 (zeroed) */
+-#define ABOX_RM_VPARAM   0x2100000u     /* 1 MB   -> IOVA 0xA1000000 (zeroed) */
++/* VSS sizes: Calliope's own L1 table (boot-ios37), a0000000-a06fffff, a1000000-a11fffff */
++#define ABOX_RM_VSS      0x1b00000u     /* 7 MB   -> IOVA 0xA0000000 (zeroed) */
+ #define ABOX_RM_PGTABLE  0x2200000u     /* 16 KB level-1 table */
++#define ABOX_RM_VPARAM   0x2300000u     /* 2 MB   -> IOVA 0xA1000000 (zeroed) */
+ #define ABOX_DRAM_FW_SIZE  0x1200000u
+ #define ABOX_IVA_FW_SIZE   0x80000u
+ #define ABOX_SRAM_SIZE     0x31000u     /* DT abox reg "sram" */
+@@ -1495,8 +1496,8 @@ exy_abox_boot(void)
+ 	static uint32_t pt[4096];          /* level-1 table, built here, copied to rmem */
+ 	static const struct { uint32_t iova, off, mb; } map[] = {
+ 		{ 0x80000000u, ABOX_RM_DRAM, 18 }, { 0x90000000u, ABOX_RM_IVA, 1 },
+-		{ 0x91000000u, ABOX_RM_RDMA, 8 }, { 0xa0000000u, ABOX_RM_VSS, 6 },
+-		{ 0xa1000000u, ABOX_RM_VPARAM, 1 },
++		{ 0x91000000u, ABOX_RM_RDMA, 8 }, { 0xa0000000u, ABOX_RM_VSS, 7 },
++		{ 0xa1000000u, ABOX_RM_VPARAM, 2 },
+ 	};
+ 	for (unsigned i = 0; i < sizeof(map) / sizeof(map[0]); i++) {
+ 		for (uint32_t m = 0; m < map[i].mb; m++) {
+@@ -1506,7 +1507,8 @@ exy_abox_boot(void)
+ 	}
+ 	pt[0x10000000u >> 20] = (0x10000000u >> 4) | 2;
+ 	abox_rm_write(ABOX_RM_PGTABLE, (const uint8_t *)pt, sizeof(pt), sizeof(pt));
+-	abox_rm_write(ABOX_RM_VSS, NULL, 0, 7u << 20);            /* VSS + parameter */
++	abox_rm_write(ABOX_RM_VSS, NULL, 0, 7u << 20);
++	abox_rm_write(ABOX_RM_VPARAM, NULL, 0, 2u << 20);
+ 	abox_rm_write(ABOX_RM_RDMA, NULL, 0, 8u << 20);
+ 
+ 	/* abox_enable(): sysreg, GIC, firmware, DRAM on, CPU power, pads */
+@@ -1598,12 +1600,13 @@ exy_abox_boot(void)
+ 	 * boot-ios28: once the ABOX CPU was enabled a plain read of SRAM
+ 	 * +0x30300 bus-errored (esr 0x96000010, far = the SRAM +0x30000 page),
+ 	 * so every read here goes through the safe path; 0xabababab = ABORT.
+-	 * 10 s, abox.c BOOT_DONE_TIMEOUT_MS.
++	 * 30 s: abox.c BOOT_DONE_TIMEOUT_MS is 10 s, plus Calliope's own VSS
++	 * init timeout with no modem behind the shared memory.
+ 	 */
+-	for (int t = 0; t < 100; t++) {
++	for (int t = 0; t < 300; t++) {
+ 		uint32_t id = abox_sp(sram + 0x30300), type = abox_sp(sram + 0x30308);
+ 		bool done = id == 1 && type == 3;
+-		if (t < 10 || t % 10 == 9 || done) {
++		if (t < 10 || t % 20 == 19 || done) {
+ 			printf("SWEET ABOX: t+%d00ms pc %#x cpu_status %#x syspower %#x sram+0 %#x +0x30000 %#x"
+ 			    " rx ipcid %#x msg %#x p1 %#x p3 %#x mmu int %#x far %#x/%#x\n", t,
+ 			    abox_sp(sfr + 0x2c3c), touch_rd(pmu, 0x4160), abox_sp(sfr + 0x14), abox_sp(sram),
+@@ -1623,7 +1626,8 @@ exy_abox_boot(void)
+ 		}
+ 		touch_wait(100);
+ 	}
+-	printf("SWEET ABOX: no boot done after 10 s\n");
++	printf("SWEET ABOX: no boot done after 30 s\n");
++	abox_postmortem(sram, sram_len, dram_len);
+ }
+ 
+ static void
