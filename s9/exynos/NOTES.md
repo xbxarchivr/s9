@@ -1166,3 +1166,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 - **Patch 0134 (written, not built):** after the fault, compare SRAM 0x40..image end with the Calliope-SRAM blob word by word (first 24 differences + count) and print SRAM 0x40-0x7f.
 - **0134 compiled** (run 40982245885, success): `out/exynos/xnu31/kernel.development.sweet` sha256 aa374bcb... **Boot image `out/exynos/boot-ios35.img`** (sha256 c0c3b15e...) = boot-ios34 blobs/cmdline with the 0134 kernel. Not flashed. Fallback: boot-ios34 (boots iOS) / boot-ios25.
 
+- **boot-ios35 flashed** to BOOT (sda10), readback sha256 c0c3b15e... matches. Rebooted. Fallback boot-ios34 / boot-ios25.
+
