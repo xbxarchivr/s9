@@ -1243,3 +1243,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 
 - **boot-ios43 flashed** to BOOT (sda10), readback sha256 c18fdf36... matches. Rebooted. Fallback boot-ios42 / boot-ios40.
 
+- **boot-ios43 RESULT (log s9/logs/boot-ios43.txt, observed): GPU STAGE 1 WORKS, iOS booted.** G3D domain already on (PD config 0xf, status 0x10000f), no power-on or DTZPC needed; no abort or hang. **GPU_ID 0x62210010** (product 0x6221), L2_FEATURES 0x7130206, TILER 0x809, MEM 0x301, MMU_FEATURES 0x2830, AS_PRESENT 0xff (8 address spaces), JS_PRESENT 0x7 (3 job slots), **SHADER_PRESENT 0x5771777 = 18 cores (MP18)**, tiler 1, L2 1. Soft reset: RESET_COMPLETED after 1 poll. L2, tiler, all 18 shader cores READY after 1 poll, then off cleanly; fault 0, status 0. CMU_G3D PLL_CON0 0xa0a00412 (enabled, locked), PLL_CON2 0x10000001, MUX_USER 0x10.
+- **Not confirmed:** DVFS set 260 MHz replied 260000 but the g3d get request returns 0 (as at every boot), so the real GPU clock is unknown. The polls completing at once may reflect slow safe reads; reset was not independently timed.
