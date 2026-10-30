@@ -1223,3 +1223,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 
 - **Patch 0140 + xnu.yml (written, not tested):** moving the kernel build to macos-15 (workflow takes the oldest Xcode_*.app, 16.0 there). Adds `bool kernelContent` to struct IORPC in both IORPC.h copies, type from memory of later xnu, not verified. xnu.yml gains a `runner` input (workflow_dispatch; default macos-15). Other Xcode 16 breakage unknown until CI runs with make -k. s9-ios-tools.yml still says macos-14 and must move too.
 
+- **macos-15/Xcode 16 build works: 0139+0140 compiled** (run 41109507798, success): `out/exynos/xnu35/kernel.development.sweet` sha256 ad606ae9... **Boot image `out/exynos/boot-ios41.img`** (sha256 7e300d09...) = sweetaudio=6 (speakers) + all blobs; first kernel from the new compiler. Not flashed. Fallback: boot-ios40 / boot-ios39.
+
