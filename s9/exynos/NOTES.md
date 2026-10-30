@@ -1280,3 +1280,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 - Next: push (needs approval), run s9-ios-tools, put s9drop in `jailbreak/jb`, image step, `s9drop.py push --run /usr/local/bin/s9mali s9mali:/usr/local/bin/s9mali`, boot, `s9drop.py result`.
 
 - s9-ios-tools run 41125721336 (macos-15, -Werror clean, success): s9mali and s9drop built, artifact in s9/out/ios-tools-mali/; s9drop copied to s9/jailbreak/jb/. Not run on the phone. Next: user runs add-s9drop-wsl.sh.
+
+- add-s9drop-wsl.sh now edits the ElleKit image in place (user: no room for a 16 GiB copy). So 6b408b59... stops being available as a file once it runs; the clean image 0b9c631b... remains, and add-ellekit-wsl.sh + update-tweaks-wsl.sh rebuild from it.
