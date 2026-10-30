@@ -52,6 +52,15 @@ JOBS = {
         'StandardOutPath': '/private/var/ios-s9/ellekit.log',
         'StandardErrorPath': '/private/var/ios-s9/ellekit.log',
     },
+    '/System/Library/LaunchDaemons/com.ios-s9.s9drop.plist': {
+        'Label': 'com.ios-s9.s9drop',
+        'ProgramArguments': ['/usr/libexec/s9drop'],
+        'RunAtLoad': True,
+        'LaunchOnlyOnce': True,
+        'UserName': 'root',
+        'StandardOutPath': '/private/var/ios-s9/s9drop.log',
+        'StandardErrorPath': '/private/var/ios-s9/s9drop.log',
+    },
     '/System/Library/LaunchDaemons/com.ios-s9.respring.plist': {
         'Label': 'com.ios-s9.respring',
         'ProgramArguments': ['/bin/sh', '/usr/libexec/ios-s9-respring'],

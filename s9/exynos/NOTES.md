@@ -1269,3 +1269,12 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 - 2026-10-30: boot-ios46 flashed to BOOT (sda10), readback sha256 a19b156d... matches, rebooted. Fallback boot-ios45 (2c4149b6..., touch works). Awaiting log: want `SWEET MALI: self-test OK`, target 0xc0ffee42, and touch still working.
 
 - 2026-10-30: boot-ios46 result (observed, s9/logs/boot-ios46): `SWEET MALI: self-test OK: target 0xc0ffee42 ... exception 0x1; raw 0x2 status 0 mmu 0 fault 0`, then `registered`. iOS reached the lock screen and touch works (user). IOKit driver stage done apart from userland, which is untested. Next: userland client for SweetMaliUserClient.
+
+## GPU userland: s9mali + s9drop (2026-10-30, written, NOT built or run)
+
+- This phone has no SSH or USB network (`sweetusb=0`, no Exynos USB driver) and TWRP has no HFS+, so nothing installs on iOS without an image rewrite. New channel: `ios-tools/s9drop.c` (launchd job `com.ios-s9.s9drop`), `tools/s9drop.py` (TWRP side). /dev/rufsroot0 is the whole partition, so the package sits at USERDATA + 16 GiB, past the HFS+ root; the result (status + stdout) at +16 GiB + 240 MB. A package runs once per generation, so a panic cannot loop the boot.
+- `ios-tools/s9mali.c`: first SweetMali user client: map, one Write value job, then 1000 jobs timed. Expected about 1 ms or more per job because submit polls with IOSleep(1) (guess, unmeasured).
+- `exynos/add-s9drop-wsl.sh` (user runs, sudo): copies the ElleKit image (6b408b59... stays as fallback) to `ios16-root-20H392-s9-drop.img` and adds the job. Then `write-userdata.py IMG --changed`, which reverts iOS's own changes in the chunks it rewrites, as in earlier rewrites.
+- Unverified: the raw disk open and ad-hoc signed binaries as a launchd job; the IOKit symbols link. packer layout checked locally against the C structs by size only.
+- `s9-ios-tools.yml` moved to macos-15 (macos-14 retires 2026-11-02); not built on it yet.
+- Next: push (needs approval), run s9-ios-tools, put s9drop in `jailbreak/jb`, image step, `s9drop.py push --run /usr/local/bin/s9mali s9mali:/usr/local/bin/s9mali`, boot, `s9drop.py result`.
