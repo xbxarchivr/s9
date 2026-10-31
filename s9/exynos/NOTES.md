@@ -1378,3 +1378,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 - **New in boot-ios53, not in boot-ios50/51/52 logs: `CRASH SpringBoard[26] sig 10 ... pc 0x1f2db3fc8 far same, map 0x1f2000000-0x1f3b70000 prot 3/3 tag 35`, bt 0x192ca45f4 ...** Executing from non-executable memory. SpringBoard restarted and the lock screen came up (user). The tweak's filter is backboardd only. Differences from boot-ios52: 256 MB hole, kernel 0151, tweak and library files on disk. Cause unknown; one occurrence. Watch for it.
 
 - s9-mesa run 41156967130 (slots + 0x20). `out/exynos/boot-ios54.img` sha256 cc1c3c2f0060659a60110d255a27f31cf3ea1c8ea0a4466d4f5215e8b1937edc = boot-ios53 + sweeteagl=1 glframes=1. Not flashed. Fallback to EAGL off: boot-ios53 (1d0b27c0...).
+
+- boot-ios54 flashed 2026-10-31, readback cc1c3c2f... matches; corrected S9EAGL + s9glslots pushed; rebooted with sweeteagl=1. Result pending.
