@@ -3836,6 +3836,8 @@ my_initWithAPI(id self, SEL selector, unsigned long api, id properties)
 	e->api = api;
 	e->table[0] = e;
 	eagl_fill_table(e->table);
+	/* Galaxy S9: on iOS 16.7.16 OpenGLES's functions take the context from table + 0x20 */
+	e->table[0x20 / 8] = e;
 	contexts[place] = e;
 	say("hakios-gl: an OpenGL ES %lu context for CoreAnimation, by %s: %s; %s; shaders %s\n", api, hakios_gl_library(),
 	    (const char *)glGetString(GL_VERSION), (const char *)glGetString(GL_RENDERER),

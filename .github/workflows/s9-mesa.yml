@@ -87,7 +87,7 @@ jobs:
           install_name_tool -id "$INSTALL_DIR/libOSMesa.8.dylib" "$OUT/libOSMesa.8.dylib"
           "$CC" -arch arm64 -isysroot "$SDK" -miphoneos-version-min=16.0 -O2 -Wall -Werror \
             s9/mesa/s9gltest.c "$OUT/libOSMesa.8.dylib" -o "$OUT/s9gltest"
-          "$CC" -arch arm64 -isysroot "$SDK" -miphoneos-version-min=16.0 -O2 -Wall -Werror s9/mesa/s9glslots.c -o "$OUT/s9glslots"
+          "$CC" -arch arm64 -isysroot "$SDK" -miphoneos-version-min=16.0 -O2 -Wall -Werror -lobjc s9/mesa/s9glslots.c -o "$OUT/s9glslots"
           # the EAGLContext of backboardd: table generated from the slots, the registry and what Mesa exports
           GEN="$RUNNER_TEMP/eagl-gen"
           mkdir -p "$GEN"

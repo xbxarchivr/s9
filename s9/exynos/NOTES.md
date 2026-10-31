@@ -1380,3 +1380,7 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 - s9-mesa run 41156967130 (slots + 0x20). `out/exynos/boot-ios54.img` sha256 cc1c3c2f0060659a60110d255a27f31cf3ea1c8ea0a4466d4f5215e8b1937edc = boot-ios53 + sweeteagl=1 glframes=1. Not flashed. Fallback to EAGL off: boot-ios53 (1d0b27c0...).
 
 - boot-ios54 flashed 2026-10-31, readback cc1c3c2f... matches; corrected S9EAGL + s9glslots pushed; rebooted with sweeteagl=1. Result pending.
+
+- **boot-ios54 result (observed, 2026-10-31, log s9/logs/boot-ios54): lock screen (user), but EAGL did NOT run: 0 `hakios-gl` lines.** `exec backboardd` comes before ElleKit's loader, so the first backboardd has no tweaks (as add-ellekit-wsl.sh's comment says). This lock screen was drawn the old CPU way. No SpringBoard or backboardd crash in this log; the boot-ios53 SpringBoard crash did not repeat.
+- s9glslots fixed decoder: **457 functions, 0 differ, PASS** with eagl_slots.txt + 0x20. Dumps: glFlush = `mrs x8, tpidrro_el0; ldr x8,[x8,#0xf0]; cbz; ldr x1,[x8,#0x2f8]; ldr x0,[x8,#0x20]; br x1`, so **the context is at table + 0x20, not + 0**. eagl.c now sets table[0x20/8] too.
+- Not known: whether -getMacroContextPrivate gives QuartzCore P or P + 0x20. If P + 0x20, the offsets QuartzCore uses are the OLD ones and + 0x20 is wrong for it. s9glslots now counts QuartzCore's loads at both and dumps the method. `--kick` kills backboardd 30 s after boot so launchd starts one with tweaks; without it EAGL stays unloaded, whatever the boot-arg says.
