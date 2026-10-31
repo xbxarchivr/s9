@@ -1352,3 +1352,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 - Decisions: tiler heap 4 MB instead of 128 MB (30 MB total and no alloc-on-fault). Guess: too small for real scenes. Job failures are only logged (like Linux); s9gltest's pixel checks catch them.
 - Patch 0150 (written, not built): SweetMali selector 5 reads a GPU register below 0x1000, for GET_PARAM.
 - Expected trouble, unverified: compile errors in panthor code on Darwin (kept in the build because pan_csf.c references it); missing registers/quirks Linux sets (panfrost_gpu_init_quirks); AFBC; tiler heap size.
+
+- Mesa built on the first try: s9-mesa run 41153477315 (macos-15), `out/mesa/` libOSMesa.8.dylib 14928480 bytes, s9gltest 70544 bytes. 0150 built: xnu run 41153477339, kernel `out/exynos/xnu45` sha256 3f836ba0...; `out/exynos/boot-ios52.img` sha256 cf249129d84a36558b946607c226c26d6b5418daabc0c4187dddff3a03cbd0d0. Not flashed, nothing run.
