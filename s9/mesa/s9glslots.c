@@ -17,7 +17,11 @@ static long
 offset_of(const uint32_t *code)
 {
 	for (int i = 0; i < 48; i++) {
-		if ((code[i] & 0xfffffc1f) != 0xd61f0000) {     /* BR Xn */
+		/* RET first: functions with stack arguments call and return, and past it is the next function */
+		if (code[i] == 0xd65f03c0) {
+			return -1;
+		}
+		if ((code[i] & 0xfffffc1f) != 0xd61f0000 && (code[i] & 0xfffffc1f) != 0xd63f0000) {     /* BR, BLR Xn */
 			continue;
 		}
 		unsigned reg = (code[i] >> 5) & 31;
@@ -43,6 +47,19 @@ main(int argc, char **argv)
 		return 1;
 	}
 	void *gles = dlopen("/System/Library/Frameworks/OpenGLES.framework/OpenGLES", RTLD_NOW);
+	/* the code itself, to read how the table is reached */
+	static const char *const sample[] = { "glFlush", "glClear", "glTexImage2D", "glCreateProgram" };
+	for (unsigned s = 0; s < sizeof(sample) / sizeof(sample[0]); s++) {
+		const uint32_t *code = dlsym(gles, sample[s]);
+		printf("%s:", sample[s]);
+		for (int i = 0; code != NULL && i < 24; i++) {
+			printf(" %08x", code[i]);
+			if (code[i] == 0xd65f03c0) {
+				break;
+			}
+		}
+		printf("\n");
+	}
 	FILE *f = fopen(argv[1], "r");
 	if (f == NULL) {
 		printf("FAIL: cannot open %s\n", argv[1]);
