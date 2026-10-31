@@ -1,6 +1,6 @@
 ﻿These files are from HakiOS, https://github.com/oosexgang/hackios-xnu-kernel at commit a3384e0, userland/src and userland/mkeagl.py.
 Changes for the Galaxy S9: eagl.c is gated on the boot-arg sweeteagl=1 and logs to /dev/console; gl_osmesa.c does not use OES_EGL_image.
-IOKit/IOKitLib.h is ours: an empty stand-in, because the iOS SDK has no IOKit headers.
+IOKit/IOKitLib.h is ours: the few declarations eagl.c needs, because the iOS SDK has no IOKit headers.
 
 MIT License
 

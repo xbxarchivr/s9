@@ -96,7 +96,7 @@ jobs:
           python3 -I s9/mesa/eagl/mkeagl.py s9/mesa/eagl/eagl_slots.txt "$RUNNER_TEMP/mesa-$MESA_VERSION/src/mapi/glapi/registry/gl.xml" \
             "$GEN/exported-gl.txt" s9/mesa/eagl/eagl.c > "$GEN/eagl_gen.h"
           "$CC" -arch arm64 -isysroot "$SDK" -miphoneos-version-min=16.0 -O2 -w -dynamiclib -I"$GEN" -Is9/mesa/eagl \
-            -install_name /usr/lib/TweakInject/S9EAGL.dylib -framework CoreFoundation -framework IOSurface -framework OpenGLES -lobjc \
+            -install_name /usr/lib/TweakInject/S9EAGL.dylib -framework CoreFoundation -framework IOKit -framework IOSurface -framework OpenGLES -lobjc \
             "$OUT/libOSMesa.8.dylib" s9/mesa/eagl/eagl.c s9/mesa/eagl/gl_osmesa.c -o "$OUT/S9EAGL.dylib"
           cp s9/mesa/eagl/S9EAGL.plist s9/mesa/eagl/eagl_slots.txt "$OUT/"
           codesign -f -s - "$OUT/libOSMesa.8.dylib"
