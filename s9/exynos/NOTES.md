@@ -1369,3 +1369,5 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 - Expected trouble, unverified: sandbox may deny backboardd opening SweetMaliUserClient (would fall back to softpipe); read-back cost per frame; CA features needing inject.c; no GPU recovery if a job hangs.
 
 - Stage 1 built: xnu run 41155327922 (0151), kernel `out/exynos/xnu46`; s9-mesa run 41156318320, `out/mesa/` with S9EAGL.dylib, s9glslots; `out/exynos/boot-ios53.img` sha256 1d0b27c03be812018c4ff867556e2a3913e360999ee81303852bdee933af6daa = 256 MB GPU ADT, EAGL off (no sweeteagl). Not flashed.
+
+- boot-ios53 flashed 2026-10-31, readback 1d0b27c0... matches; package with libOSMesa, s9gltest, s9glslots, slots, S9EAGL tweak pushed; run = s9glslots; rebooted. Result pending.
