@@ -1,0 +1,99 @@
+name: s9-mesa
+# Mesa's Panfrost for iOS on the Galaxy S9 (Mali-G72), behind OSMesa, and its test.
+on:
+  push:
+    paths:
+      - 's9/mesa/**'
+      - '.github/workflows/s9-mesa.yml'
+  workflow_dispatch:
+
+env:
+  MESA_VERSION: 25.0.7
+  MESA_SHA256: 592272df3cf01e85e7db300c449df5061092574d099da275d19e97ef0510f8a6
+  INSTALL_DIR: /usr/local/lib
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: |
+          brew install meson ninja bison flex
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" -q install mako pyyaml packaging
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix flex)/bin" >> "$GITHUB_PATH"
+      - name: Fetch and patch Mesa
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -sL --fail -o mesa.tar.xz "https://archive.mesa3d.org/mesa-$MESA_VERSION.tar.xz"
+          echo "$MESA_SHA256  mesa.tar.xz" | shasum -a 256 -c
+          tar xJf mesa.tar.xz
+          python3 -I "$GITHUB_WORKSPACE/s9/mesa/patch-mesa.py" "mesa-$MESA_VERSION"
+      - name: Configure
+        run: |
+          cd "$RUNNER_TEMP"
+          SDK=$(xcrun -sdk iphoneos --show-sdk-path)
+          CC=$(xcrun -sdk iphoneos -f clang)
+          CXX=$(xcrun -sdk iphoneos -f clang++)
+          cat > cross.ini <<INI
+          [binaries]
+          c = ['$CC', '-arch', 'arm64', '-isysroot', '$SDK', '-miphoneos-version-min=16.0']
+          cpp = ['$CXX', '-arch', 'arm64', '-isysroot', '$SDK', '-miphoneos-version-min=16.0', '-fuse-cxa-atexit']
+          objc = ['$CC', '-arch', 'arm64', '-isysroot', '$SDK', '-miphoneos-version-min=16.0']
+          ar = '$(xcrun -sdk iphoneos -f ar)'
+          ranlib = '$(xcrun -sdk iphoneos -f ranlib)'
+          strip = '$(xcrun -sdk iphoneos -f strip)'
+          pkg-config = 'false'
+
+          [host_machine]
+          system = 'darwin'
+          subsystem = 'ios'
+          cpu_family = 'aarch64'
+          cpu = 'arm64'
+          endian = 'little'
+
+          [properties]
+          needs_exe_wrapper = true
+          INI
+          meson setup build "mesa-$MESA_VERSION" --cross-file cross.ini --wrap-mode=nofallback \
+            --prefix=/usr/local --libdir=lib --buildtype=release -Db_ndebug=true \
+            -Dplatforms= -Dgallium-drivers=softpipe,panfrost -Dvulkan-drivers= -Dglx=disabled -Degl=disabled -Dgbm=disabled \
+            -Dosmesa=true -Dllvm=disabled -Dshared-glapi=enabled -Dgles1=disabled -Dgles2=enabled -Dopengl=true \
+            -Dzstd=disabled -Dxmlconfig=disabled -Dexpat=disabled -Dshader-cache=disabled -Dvalgrind=disabled \
+            -Dlibunwind=disabled -Dglvnd=disabled -Dvideo-codecs= -Dtools= -Dgallium-vdpau=disabled -Dgallium-va=disabled \
+            -Dgallium-xa=disabled -Dlmsensors=disabled -Dbuild-tests=false
+      - name: Show the meson log
+        if: failure()
+        run: tail -60 "$RUNNER_TEMP/build/meson-logs/meson-log.txt" || true
+      - name: Build
+        run: |
+          cd "$RUNNER_TEMP"
+          ninja -C build -k 0 > ninja.log 2>&1 || {
+            grep -E -A12 'error:|FAILED:|Undefined symbols' ninja.log | head -200
+            exit 1
+          }
+          tail -3 ninja.log
+      - name: Package and sign
+        run: |
+          OUT="$GITHUB_WORKSPACE/s9/mesa/out"
+          mkdir -p "$OUT"
+          SDK=$(xcrun -sdk iphoneos --show-sdk-path)
+          CC=$(xcrun -sdk iphoneos -f clang)
+          cp "$RUNNER_TEMP/build/src/gallium/targets/osmesa/libOSMesa.8.dylib" "$OUT/"
+          strip -x "$OUT/libOSMesa.8.dylib"
+          install_name_tool -id "$INSTALL_DIR/libOSMesa.8.dylib" "$OUT/libOSMesa.8.dylib"
+          "$CC" -arch arm64 -isysroot "$SDK" -miphoneos-version-min=16.0 -O2 -Wall -Werror \
+            s9/mesa/s9gltest.c "$OUT/libOSMesa.8.dylib" -o "$OUT/s9gltest"
+          codesign -f -s - "$OUT/libOSMesa.8.dylib"
+          codesign -f -s - "$OUT/s9gltest"
+          otool -L "$OUT/s9gltest" "$OUT/libOSMesa.8.dylib"
+          ls -l "$OUT"
+          nm -gU "$OUT/libOSMesa.8.dylib" | grep -c ' _gl' || true
+          (cd "$OUT" && shasum -a 256 libOSMesa.8.dylib s9gltest > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s9-mesa
+          path: s9/mesa/out/

@@ -1,0 +1,39 @@
+diff --git a/iokit/Kernel/arm/SweetMali.cpp b/iokit/Kernel/arm/SweetMali.cpp
+index 84c2ac9..68c720a 100644
+--- a/iokit/Kernel/arm/SweetMali.cpp
++++ b/iokit/Kernel/arm/SweetMali.cpp
+@@ -14,7 +14,8 @@
+  * for CoreAnimation in the end: a real allocator comes with Mesa.
+  *
+  * User client (one at a time): 0 info, 1 alloc, 2 submit and wait, 3 free all,
+- * 4 for s9mali's experiments; clientMemoryForType 0 maps the 30 MB, write-combined.
++ * 4 for s9mali's experiments, 5 read a GPU register; clientMemoryForType 0 maps
++ * the 30 MB, write-combined.
+  */
+ #include <pexpert/arm64/board_config.h>
+ 
+@@ -150,6 +151,10 @@ public:
+ 	{
+ 		return fMemDesc;
+ 	}
++	uint32_t readRegister(uint32_t off) const
++	{
++		return rd(off);
++	}
+ 	uint32_t gpuId(void) const
+ 	{
+ 		return fId;
+@@ -555,6 +560,13 @@ SweetMaliUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+ 		}
+ 		return fOwner->configure((uint32_t)args->scalarInput[0], args->scalarInput[1] != 0,
+ 		           args->scalarInput[2] != 0) ? kIOReturnSuccess : kIOReturnNotReady;
++	case 5:         /* for Mesa's Panfrost, in: GPU register below the job control block; out: its value */
++		if (args->scalarInputCount < 1 || args->scalarOutputCount < 1 ||
++		    args->scalarInput[0] >= 0x1000 || (args->scalarInput[0] & 3)) {
++			return kIOReturnBadArgument;
++		}
++		args->scalarOutput[0] = fOwner->readRegister((uint32_t)args->scalarInput[0]);
++		return kIOReturnSuccess;
+ 	default:
+ 		return kIOReturnUnsupported;
+ 	}

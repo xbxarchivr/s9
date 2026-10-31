@@ -1344,3 +1344,11 @@ Stages 1-2 are days; 3 is the big one (weeks, firmware protocol).
 - Facts vs limits: only Write value jobs so far, no shaders, tiler or real rendering. Nothing in iOS uses the GPU, so the UI is not faster yet. Whole-GPU flushes were not needed in these 2000 runs, but they still default on: decide once real workloads exist. Per-run times vary a lot (106-7297 us) with the job itself at about 32 us; cause not measured (guess: other boot activity on the CPUs). Driver limits unchanged: 30 MB linear memory, polling, no isolation between clients, one job at a time.
 - BOOT = boot-ios51 (5e5e4dac...), USERDATA = fd0e2ece... + iOS's changes. s9mali in /usr/local/bin; the package has run and will not run again until a new push.
 - Next: Mesa Panfrost for iOS (fake libdrm over SweetMaliUserClient), first a headless GLES test through s9drop; then EAGL behind CoreAnimation; then measure.
+
+## Mesa Panfrost for iOS: first headless test (2026-10-31, written, NOT built)
+
+- Reference: HakiOS builds Mesa for iOS the same way (moved to `oosexgang/hackios-xnu-kernel`, `tools/mk-mesa.sh`, `tools/mesa/`, userland MIT per its LICENSE/LEGAL): Mesa **25.0.7** (sha256 592272df..., tarball from archive.mesa3d.org), OSMesa, no LLVM, a stand-in xf86drm.h. Read in the scratchpad, approach followed, credited in the files. Mesa 25.0.7 Panfrost needs no libclc/precomp (no `src/panfrost/clc`), checked in the tarball.
+- `s9/mesa/`: `patch-mesa.py` (exact-text edits, fails on any other tree; checked against the real files on Windows, not compiled), `sweet-drm/` (fake libdrm: all Panfrost UAPI in userland over SweetMali; allocator of extents of the 30 MB; submit is synchronous so syncobjs are no-ops), `s9gltest.c` (ES3 context, clear + triangle read back, 100 frames timed, then softpipe for comparison). CI `.github/workflows/s9-mesa.yml` (macos-15, new).
+- Decisions: tiler heap 4 MB instead of 128 MB (30 MB total and no alloc-on-fault). Guess: too small for real scenes. Job failures are only logged (like Linux); s9gltest's pixel checks catch them.
+- Patch 0150 (written, not built): SweetMali selector 5 reads a GPU register below 0x1000, for GET_PARAM.
+- Expected trouble, unverified: compile errors in panthor code on Darwin (kept in the build because pan_csf.c references it); missing registers/quirks Linux sets (panfrost_gpu_init_quirks); AFBC; tiler heap size.
