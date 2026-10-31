@@ -43,6 +43,8 @@ PHYS_BASE, MEM_TOP = 0x92000000, 0xf0000000
 SMALL_MEM_TOP = 0xaf800000
 RAM4G_MEM_TOP = 0x900000000     # end of the 2 GB bank at 0x880000000
 RAM4G_HOLE = (0xf0000000, 0x880000000)
+# --gpumem: SweetMali's memory (patch 0151), 256 MB of the 2 GB bank, kept from XNU
+GPU_HOLE = (0x8e0000000, 0x8f0000000)
 # [start, end) inside the span that XNU must never allocate (pmap_is_bad_ram)
 RAM_HOLES = (
     (0xaf800000, 0xb1800000),   # removed-dma-pool, 32 MB
@@ -78,7 +80,7 @@ def set_prop(n, name, value):
     n.props.append((name, 0, value))
 
 
-def build(scale=3, small=False, ram4g=False):
+def build(scale=3, small=False, ram4g=False, gpumem=False):
     root = base.build(scale=scale)
     soc = base.SOC_BASE
 
@@ -88,7 +90,7 @@ def build(scale=3, small=False, ram4g=False):
     set_prop(chosen, 'dram-base', u64(PHYS_BASE))
     set_prop(chosen, 'dram-size', u64(mem_size))
     if not small:
-        holes = RAM_HOLES + ((RAM4G_HOLE,) if ram4g else ())
+        holes = RAM_HOLES + ((RAM4G_HOLE,) if ram4g else ()) + ((GPU_HOLE,) if gpumem else ())
         for a, b in holes:
             assert PHYS_BASE <= a < b <= PHYS_BASE + mem_size
         set_prop(chosen, 'sweet-ram-holes', b''.join(u64(a, b) for a, b in holes))
@@ -138,7 +140,7 @@ def build(scale=3, small=False, ram4g=False):
 
 if __name__ == '__main__':
     root = build(scale=2 if '--scale2' in sys.argv else 3, small='--small' in sys.argv,
-                 ram4g='--ram4g' in sys.argv)
+                 ram4g='--ram4g' in sys.argv, gpumem='--gpumem' in sys.argv)
     blob = adt.serialize(root)
     open(sys.argv[1], 'wb').write(blob)
     if '--dump' in sys.argv:

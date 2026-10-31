@@ -1,0 +1,127 @@
+diff --git a/iokit/Kernel/arm/SweetMali.cpp b/iokit/Kernel/arm/SweetMali.cpp
+index 68c720a..f6f3e80 100644
+--- a/iokit/Kernel/arm/SweetMali.cpp
++++ b/iokit/Kernel/arm/SweetMali.cpp
+@@ -7,11 +7,11 @@
+  * left on by S-Boot (boot-ios43: PMU 0x4044 = 0x10000f). boot-ios44 proved
+  * the sequence with one Write value job.
+  *
+- * Memory: DT cp_ram_logging 0xf9200000, 32 MB in the RAM hole XNU never uses.
+- * GPU VA 0x01000000 maps the first 30 MB linearly in 2 MB blocks, the last
+- * 2 MB holds the page tables and is NOT mapped for the GPU, so a job cannot
+- * rewrite its own tables or reach anything outside this block. Not enough
+- * for CoreAnimation in the end: a real allocator comes with Mesa.
++ * Memory: 256 MB of the 2 GB bank, a hole in the ADT (mkadt.py --gpumem). GPU VA
++ * 0x01000000 maps the first 254 MB linearly in 2 MB blocks, the last 2 MB holds
++ * the page tables and is NOT mapped for the GPU, so a job cannot rewrite its own
++ * tables or reach anything outside this block. Userland allocates inside it
++ * (s9/mesa/sweet-drm) and zeroes what it needs; alloc does not zero.
+  *
+  * User client (one at a time): 0 info, 1 alloc, 2 submit and wait, 3 free all,
+  * 4 for s9mali's experiments, 5 read a GPU register; clientMemoryForType 0 maps
+@@ -31,10 +31,10 @@
+ 
+ #define MALI_REGS_PA    0x17500000ULL
+ #define MALI_REGS_LEN   0x5000
+-#define MALI_MEM_PA     0xf9200000ULL
+-#define MALI_MEM_LEN    0x1e00000u          /* GPU visible, 30 MB */
+-#define MALI_PT_OFF     0x1e00000u          /* page tables: 3 pages, not GPU visible */
+-#define MALI_TOTAL_LEN  0x2000000u
++#define MALI_MEM_PA     0x8e0000000ULL
++#define MALI_MEM_LEN    0xfe00000u          /* GPU visible, 254 MB */
++#define MALI_PT_OFF     0xfe00000u          /* page tables: 3 pages, not GPU visible */
++#define MALI_WINDOW     0x200000u           /* what the kernel itself maps of each */
+ #define MALI_VA         0x01000000ULL
+ #define MALI_BLOCK      0x200000u
+ 
+@@ -103,9 +103,9 @@ struct SweetMaliResult {
+ class SweetMali : public IOService {
+ 	OSDeclareDefaultStructors(SweetMali);
+ 
+-	IOMemoryMap *fRegsMap, *fMemMap;
++	IOMemoryMap *fRegsMap, *fMemMap, *fTablesMap;
+ 	IOMemoryDescriptor *fMemDesc;
+-	volatile uint8_t *fRegs, *fMem;
++	volatile uint8_t *fRegs, *fMem, *fTables;
+ 	IOLock *fLock;
+ 	uint32_t fNext, fShaders, fTiler, fL2, fId;
+ 	bool fPowered;
+@@ -198,7 +198,7 @@ bool
+ SweetMali::setupTables(void)
+ {
+ 	/* one map per region: L0 -> L1 -> L2 -> 15 blocks of 2 MB */
+-	volatile uint64_t *pt = (volatile uint64_t *)(fMem + MALI_PT_OFF);
++	volatile uint64_t *pt = (volatile uint64_t *)fTables;
+ 	for (uint32_t i = 0; i < 3 * 4096 / 8; i++) {
+ 		pt[i] = 0;
+ 	}
+@@ -238,7 +238,7 @@ SweetMali::powerUp(void)
+ 	}
+ 	(void)poll(AS0_STATUS, 0, 1, 10000);
+ 	wr(AS0_TRANSTAB, (uint32_t)(MALI_MEM_PA + MALI_PT_OFF));
+-	wr(AS0_TRANSTAB + 4, 0);
++	wr(AS0_TRANSTAB + 4, (uint32_t)((MALI_MEM_PA + MALI_PT_OFF) >> 32));
+ 	wr(AS0_MEMATTR, fMemAttr);
+ 	wr(AS0_MEMATTR + 4, fMemAttr);
+ 	wr(AS0_TRANSCFG, AS_TRANSCFG);
+@@ -299,10 +299,6 @@ SweetMali::alloc(uint32_t size)
+ 	}
+ 	IOLockLock(fLock);
+ 	if (len <= MALI_MEM_LEN - fNext) {
+-		volatile uint32_t *p = (volatile uint32_t *)(fMem + fNext);
+-		for (uint32_t i = 0; i < len / 4; i++) {
+-			p[i] = 0;
+-		}
+ 		va = (uint32_t)MALI_VA + fNext;
+ 		fNext += len;
+ 	}
+@@ -375,7 +371,7 @@ SweetMali::submit(uint64_t jc, uint32_t slot, SweetMaliResult *r)
+ 			printf("SWEET MALI: job %#llx slot %u not done: raw %#x js_state %#x status %#x head %#x cmd_next %#x head_next %#x config %#x mmu %#x fault %#x addr %#x gpu %#x\n",
+ 			    jc, slot, r->raw, rd(JOB_JS_STATE), r->status, r->head, rd(JS(slot, JS_CMD_NEXT)),
+ 			    rd(JS(slot, JS_HEAD_NEXT)), rd(JS(slot, JS_CONFIG_CUR)), r->mmuRaw, r->asFault, r->asAddr, r->gpuFault);
+-			if (jc >= MALI_VA && jc + 64u <= MALI_VA + MALI_MEM_LEN) {
++			if (jc >= MALI_VA && jc + 64u <= MALI_VA + MALI_WINDOW) {
+ 				volatile uint32_t *d = (volatile uint32_t *)(fMem + (jc - MALI_VA));
+ 				printf("SWEET MALI: job as the kernel reads it: %#x %#x %#x %#x word4 %#x target %#x type %#x value %#x\n",
+ 				    d[0], d[1], d[2], d[3], d[4], d[8], d[10], d[12]);
+@@ -405,6 +401,10 @@ SweetMali::selfTest(void)
+ 	}
+ 	volatile uint32_t *j = (volatile uint32_t *)(fMem + (job - (uint32_t)MALI_VA));
+ 	volatile uint32_t *t = (volatile uint32_t *)(fMem + (target - (uint32_t)MALI_VA));
++	for (int i = 0; i < 16; i++) {
++		j[i] = 0;
++	}
++	t[0] = 0;
+ 	j[4] = 1u | 2u << 1 | 1u << 16;         /* 64-bit, Write value, index 1 */
+ 	j[8] = target;
+ 	j[10] = 6;                              /* Immediate 32 */
+@@ -428,20 +428,24 @@ SweetMali::start(IOService *provider)
+ 	fMemAttr = AS_MEMATTR;
+ 	fExplicitFlush = true;
+ 	IOMemoryDescriptor *regs = IOMemoryDescriptor::withPhysicalAddress(MALI_REGS_PA, MALI_REGS_LEN, kIODirectionInOut);
+-	IOMemoryDescriptor *all = IOMemoryDescriptor::withPhysicalAddress(MALI_MEM_PA, MALI_TOTAL_LEN, kIODirectionInOut);
++	IOMemoryDescriptor *window = IOMemoryDescriptor::withPhysicalAddress(MALI_MEM_PA, MALI_WINDOW, kIODirectionInOut);
++	IOMemoryDescriptor *tables = IOMemoryDescriptor::withPhysicalAddress(MALI_MEM_PA + MALI_PT_OFF, MALI_WINDOW, kIODirectionInOut);
+ 	fMemDesc = IOMemoryDescriptor::withPhysicalAddress(MALI_MEM_PA, MALI_MEM_LEN, kIODirectionInOut);
+-	if (fLock == NULL || regs == NULL || all == NULL || fMemDesc == NULL) {
++	if (fLock == NULL || regs == NULL || window == NULL || tables == NULL || fMemDesc == NULL) {
+ 		return false;
+ 	}
+ 	fRegsMap = regs->map(kIOMapInhibitCache);
+-	fMemMap = all->map(kIOMapWriteCombineCache);
++	fMemMap = window->map(kIOMapWriteCombineCache);
++	fTablesMap = tables->map(kIOMapWriteCombineCache);
+ 	regs->release();
+-	all->release();
+-	if (fRegsMap == NULL || fMemMap == NULL) {
++	window->release();
++	tables->release();
++	if (fRegsMap == NULL || fMemMap == NULL || fTablesMap == NULL) {
+ 		return false;
+ 	}
+ 	fRegs = (volatile uint8_t *)fRegsMap->getVirtualAddress();
+ 	fMem = (volatile uint8_t *)fMemMap->getVirtualAddress();
++	fTables = (volatile uint8_t *)fTablesMap->getVirtualAddress();
+ 	fId = rd(GPU_ID);
+ 	fShaders = rd(SHADER_PRESENT);
+ 	fTiler = rd(TILER_PRESENT);

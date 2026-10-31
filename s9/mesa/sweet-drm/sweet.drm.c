@@ -376,8 +376,9 @@ none(void)
 int drmPrimeHandleToFD(U int fd, U uint32_t handle, U uint32_t flags, U int *prime_fd) { return none(); }
 int drmPrimeFDToHandle(U int fd, U int prime_fd, U uint32_t *handle) { return none(); }
 int drmSyncobjFDToHandle(U int fd, U int obj_fd, U uint32_t *handle) { return none(); }
-int drmSyncobjImportSyncFile(U int fd, U uint32_t handle, U int sync_file_fd) { return none(); }
-int drmSyncobjExportSyncFile(U int fd, U uint32_t handle, U int *sync_file_fd) { return none(); }
+/* Panfrost's flush fences go through a sync file; everything has signalled, so a descriptor that means nothing will do */
+int drmSyncobjImportSyncFile(U int fd, U uint32_t handle, U int sync_file_fd) { return 0; }
+int drmSyncobjExportSyncFile(U int fd, U uint32_t handle, int *sync_file_fd) { *sync_file_fd = dup(connection_fd); return 0; }
 /* panthor's, which is built but never chosen: the G72 is not a CSF GPU */
 int drmSyncobjTimelineWait(U int fd, U uint32_t *handles, U uint64_t *points, U unsigned count, U int64_t timeout_nsec,
     U unsigned flags, U uint32_t *first_signaled) { return none(); }

@@ -61,10 +61,10 @@ change('src/gallium/drivers/panfrost/pan_bo.c', """   if (os_munmap((void *)(uin
 
 """, "")
 
-# all of a tiler heap is mapped here, nothing grows on a fault, and there are 30 MB
+# all of a tiler heap is mapped here, nothing grows on a fault, and there are 254 MB
 change('src/gallium/drivers/panfrost/pan_device.c',
        'dev, 128 * 1024 * 1024, PAN_BO_INVISIBLE | PAN_BO_GROWABLE, "Tiler heap");',
-       'dev, 4 * 1024 * 1024, PAN_BO_INVISIBLE | PAN_BO_GROWABLE, "Tiler heap");')
+       'dev, 32 * 1024 * 1024, PAN_BO_INVISIBLE | PAN_BO_GROWABLE, "Tiler heap");')
 
 # OSMesa on the GPU where the kernel has one, and an OpenGL ES profile
 change('include/GL/osmesa.h', """#define OSMESA_CONTEXT_MINOR_VERSION 0x37

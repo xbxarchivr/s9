@@ -87,12 +87,25 @@ jobs:
           install_name_tool -id "$INSTALL_DIR/libOSMesa.8.dylib" "$OUT/libOSMesa.8.dylib"
           "$CC" -arch arm64 -isysroot "$SDK" -miphoneos-version-min=16.0 -O2 -Wall -Werror \
             s9/mesa/s9gltest.c "$OUT/libOSMesa.8.dylib" -o "$OUT/s9gltest"
+          "$CC" -arch arm64 -isysroot "$SDK" -miphoneos-version-min=16.0 -O2 -Wall -Werror s9/mesa/s9glslots.c -o "$OUT/s9glslots"
+          # the EAGLContext of backboardd: table generated from the slots, the registry and what Mesa exports
+          GEN="$RUNNER_TEMP/eagl-gen"
+          mkdir -p "$GEN"
+          nm -gU "$OUT/libOSMesa.8.dylib" | awk '$3 ~ /^_gl/ { print substr($3, 2) }' > "$GEN/exported-gl.txt"
+          wc -l "$GEN/exported-gl.txt"
+          python3 -I s9/mesa/eagl/mkeagl.py s9/mesa/eagl/eagl_slots.txt "$RUNNER_TEMP/mesa-$MESA_VERSION/src/mapi/glapi/registry/gl.xml" \
+            "$GEN/exported-gl.txt" s9/mesa/eagl/eagl.c > "$GEN/eagl_gen.h"
+          "$CC" -arch arm64 -isysroot "$SDK" -miphoneos-version-min=16.0 -O2 -w -dynamiclib -I"$GEN" -Is9/mesa/eagl \
+            -install_name /usr/lib/TweakInject/S9EAGL.dylib -framework CoreFoundation -framework IOSurface -framework OpenGLES -lobjc \
+            "$OUT/libOSMesa.8.dylib" s9/mesa/eagl/eagl.c s9/mesa/eagl/gl_osmesa.c -o "$OUT/S9EAGL.dylib"
+          cp s9/mesa/eagl/S9EAGL.plist s9/mesa/eagl/eagl_slots.txt "$OUT/"
           codesign -f -s - "$OUT/libOSMesa.8.dylib"
           codesign -f -s - "$OUT/s9gltest"
-          otool -L "$OUT/s9gltest" "$OUT/libOSMesa.8.dylib"
+          codesign -f -s - "$OUT/s9glslots"
+          codesign -f -s - "$OUT/S9EAGL.dylib"
+          otool -L "$OUT/s9gltest" "$OUT/libOSMesa.8.dylib" "$OUT/S9EAGL.dylib"
           ls -l "$OUT"
-          nm -gU "$OUT/libOSMesa.8.dylib" | grep -c ' _gl' || true
-          (cd "$OUT" && shasum -a 256 libOSMesa.8.dylib s9gltest > SHA256SUMS)
+          (cd "$OUT" && shasum -a 256 libOSMesa.8.dylib s9gltest s9glslots S9EAGL.dylib > SHA256SUMS)
       - uses: actions/upload-artifact@v4
         with:
           name: s9-mesa
